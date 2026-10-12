@@ -15,6 +15,8 @@ type Props = {
   onChange: (id: string) => void;
   custom: CustomStyle | null;
   onCustomFile: (file: File) => void;
+  /** Grid density — "large" renders ~2x bigger tiles (fewer columns). */
+  size?: "normal" | "large";
 };
 
 function Selected() {
@@ -46,7 +48,7 @@ function Caption({ children, blurb }: { children: React.ReactNode; blurb?: strin
   );
 }
 
-export function StylePicker({ styles, categories, value, onChange, custom, onCustomFile }: Props) {
+export function StylePicker({ styles, categories, value, onChange, custom, onCustomFile, size = "normal" }: Props) {
   const fileRef = useRef<HTMLInputElement>(null);
   const [cat, setCat] = useState("All");
   const shown = useMemo(() => (cat === "All" ? styles : styles.filter((s) => s.category === cat)), [styles, cat]);
@@ -66,7 +68,7 @@ export function StylePicker({ styles, categories, value, onChange, custom, onCus
           </TabsList>
         </Tabs>
       </div>
-      <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 xl:grid-cols-5 2xl:grid-cols-6">
+      <div className={size === "large" ? "grid grid-cols-2 gap-2.5 sm:grid-cols-4" : "grid grid-cols-2 gap-2.5 sm:grid-cols-3 xl:grid-cols-5 2xl:grid-cols-6"}>
         {shown.map((s) => (
           <button key={s.id} type="button" onClick={() => onChange(s.id)} aria-pressed={value === s.id} title={s.blurb} className="group/card relative text-left">
             <TiltCard max={6} className="rounded-xl border border-border bg-card">

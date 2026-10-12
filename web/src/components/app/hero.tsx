@@ -12,13 +12,15 @@ import type { CastMember, Film } from "@/lib/api";
 const ROWS = 5;
 const PER_ROW = 18;
 
-function PosterWall({ films }: { films: Film[] }) {
+type Tile = { key: string; img: string; title: string; to: string };
+
+function PosterWall({ tiles }: { tiles: Tile[] }) {
   const rows = useMemo(() => {
-    const withArt = films.filter((f) => f.thumb || f.poster).slice(0, ROWS * PER_ROW);
-    const out: Film[][] = Array.from({ length: ROWS }, () => []);
-    withArt.forEach((f, i) => out[i % ROWS].push(f));
+    const slice = tiles.slice(0, ROWS * PER_ROW);
+    const out: Tile[][] = Array.from({ length: ROWS }, () => []);
+    slice.forEach((t, i) => out[i % ROWS].push(t));
     return out.filter((r) => r.length > 0);
-  }, [films]);
+  }, [tiles]);
 
   return (
     <motion.div
@@ -30,23 +32,23 @@ function PosterWall({ films }: { films: Film[] }) {
     >
       {rows.map((row, r) => (
         <Marquee key={r} direction={r % 2 ? "right" : "left"} speed={110 + r * 14} gap="0.75rem" fade={false} pauseOnHover>
-          {row.map((f) => (
+          {row.map((t) => (
             <Link
-              key={f.id}
-              to={`/films/${encodeURIComponent(f.id)}`}
+              key={t.key}
+              to={t.to}
               tabIndex={-1}
-              aria-label={f.title}
+              aria-label={t.title}
               className="group/poster relative block aspect-video w-44 overflow-hidden rounded-xl border border-border bg-card shadow-lg shadow-black/20 sm:w-64 lg:w-72"
             >
               <img
-                src={f.thumb || f.poster!}
+                src={t.img}
                 alt=""
                 loading="lazy"
                 draggable={false}
                 className="size-full object-cover transition-transform duration-500 group-hover/poster:scale-[1.06]"
               />
               <span className="absolute inset-x-0 bottom-0 translate-y-1 bg-gradient-to-t from-black/80 to-transparent px-3 pt-6 pb-2 text-left text-xs font-medium text-white opacity-0 transition-all duration-300 group-hover/poster:translate-y-0 group-hover/poster:opacity-100 sm:text-sm">
-                {f.title}
+                {t.title}
               </span>
             </Link>
           ))}
@@ -57,10 +59,20 @@ function PosterWall({ films }: { films: Film[] }) {
 }
 
 export function Hero({ cast, films }: { cast: CastMember[]; films: Film[] }) {
+  const tiles = useMemo<Tile[]>(() => {
+    const fromFilms = films
+      .filter((f) => f.thumb || f.poster)
+      .map((f) => ({ key: f.id, img: (f.thumb || f.poster) as string, title: f.title, to: `/films/${encodeURIComponent(f.id)}` }));
+    if (fromFilms.length) return fromFilms;
+    // No film data: wall the CF character catalog instead (portraits link to create).
+    return cast
+      .filter((c) => c.hero || c.thumb)
+      .map((c) => ({ key: c.id, img: c.hero || c.thumb, title: c.name, to: `/create?character=${c.id}` }));
+  }, [cast, films]);
   return (
     <>
       <section className="relative mx-[calc(50%-50vw)] flex min-h-[560px] items-center justify-center overflow-hidden sm:min-h-[680px]">
-        <PosterWall films={films} />
+        <PosterWall tiles={tiles} />
         <div className="pointer-events-none absolute inset-0 bg-background/55" />
         <div className="pointer-events-none absolute inset-x-0 top-0 h-24 bg-gradient-to-b from-background to-transparent" />
         <div className="pointer-events-none absolute inset-x-0 bottom-0 h-32 bg-gradient-to-t from-background to-transparent" />

@@ -1,11 +1,15 @@
 import { ChevronLeft, ChevronRight, LayoutGrid, List, Search, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { FilmCard } from "@/components/app/film-card";
+import { StoryCard } from "@/components/app/story-card";
+import { StoryPreviewDialog } from "@/components/app/story-preview-dialog";
 import { Input } from "@/components/motion/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/motion/select";
 import { Tabs, TabsList, TabsTrigger } from "@/components/motion/tabs";
 import { cn } from "@/lib/utils";
 import { languageName, nativeLanguage, type CastMember, type Film } from "@/lib/api";
+import { CLOUD, cloudOwner, deleteCloudStory, listCloudStories, loadCloudStory, type CloudSummary } from "@/lib/story/cloud";
+import { forgetProject, type StoryProject } from "@/lib/story/project";
 import { SHARING, owned } from "@/lib/share";
 import { AgentPromptButton } from "@/components/app/agent-button";
 
@@ -125,8 +129,56 @@ function Row({ children, className }: { children: React.ReactNode; className?: s
   );
 }
 
-export function FilmsPage({ films: all, loading, cast = [] }: { films: Film[]; loading: boolean; cast?: CastMember[] }) {
+export function FilmsPage({ films: all, loading, cast = [], onOpenStory }: { films: Film[]; loading: boolean; cast?: CastMember[]; onOpenStory: (id: string) => void }) {
   const [f, setF] = useState<Filters>(readUrl);
+  const [stories, setStories] = useState<CloudSummary[]>([]);
+  const [storiesLoading, setStoriesLoading] = useState(false);
+  const [opening, setOpening] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState<string | null>(null);
+  const [preview, setPreview] = useState<StoryProject | null>(null);
+
+  useEffect(() => {
+    if (!CLOUD) return;
+    let live = true;
+    setStoriesLoading(true);
+    listCloudStories()
+      .then((list) => live && setStories(list))
+      .catch(() => {})
+      .finally(() => live && setStoriesLoading(false));
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  const openStory = (id: string) => {
+    setOpening(id);
+    onOpenStory(id);
+    window.setTimeout(() => setOpening((o) => (o === id ? null : o)), 8000);
+  };
+
+  async function previewStory(id: string) {
+    try {
+      setPreview(await loadCloudStory(id));
+    } catch {
+      // toast lives in App; silently ignore here
+    }
+  }
+
+  async function deleteStory(id: string) {
+    const target = stories.find((s) => s.id === id);
+    if (!window.confirm(`Delete "${target?.title || "this story"}"? Its images, posters and audio go with it.`)) return;
+    setDeleting(id);
+    try {
+      const owner = cloudOwner(id);
+      if (owner) await deleteCloudStory(id, owner);
+      forgetProject(id);
+      setStories((prev) => prev.filter((s) => s.id !== id));
+    } catch {
+      // list keeps the entry; user can retry
+    } finally {
+      setDeleting(null);
+    }
+  }
 
   const counts = useMemo(() => {
     const mine = new Set(Object.keys(owned()));
@@ -353,6 +405,29 @@ export function FilmsPage({ films: all, loading, cast = [] }: { films: Film[]; l
           </button>
         )}
       </div>
+
+      {CLOUD && (storiesLoading || stories.length > 0) && (
+        <section>
+          <div className="mb-3 flex items-baseline justify-between gap-3">
+            <h2 className="text-sm font-semibold tracking-tight">Cloud stories</h2>
+            <span className="font-mono text-xs text-muted-foreground">{stories.length} saved</span>
+          </div>
+          {storiesLoading ? (
+            <div className="grid gap-x-4 gap-y-6 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+              {Array.from({ length: 4 }).map((_, i) => (
+                <div key={i} className="aspect-video animate-pulse rounded-2xl bg-muted" />
+              ))}
+            </div>
+          ) : (
+            <div className={cn("grid gap-x-4 gap-y-6", f.view === "grid" ? "sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4" : "grid-cols-1")}>
+              {stories.map((s) => (
+                <StoryCard key={s.id} story={s} layout={f.view} opening={opening === s.id} deleting={deleting === s.id} onOpen={openStory} onPreview={previewStory} onDelete={deleteStory} />
+              ))}
+            </div>
+          )}
+        </section>
+      )}
+      <StoryPreviewDialog project={preview} onClose={() => setPreview(null)} />
 
       {loading ? (
         <div className="grid gap-x-4 gap-y-6 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">

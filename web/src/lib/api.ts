@@ -17,6 +17,8 @@ export type CastMember = {
   hero: string;
   sheet: string;
   voice: { voice_id: string; name: string };
+  traits?: string;
+  pronoun?: string;
 };
 export type Config = {
   styles: Style[];
@@ -77,15 +79,23 @@ export type Film = {
   views?: number;
 };
 
+export type Protagonist = { gender: string; age: string; species: string };
+
 export type NewJob = {
   topic: string;
   style: string;
   minutes: number;
+  scenes: number;
+  aspect: string;
+  genre: string;
   language: string;
   style_url: string;
   character_url: string;
   character_name: string;
   character_id: string;
+  /** "protagonist" = AI invents the hero (gender/age/species); "narrator" = chosen character tells the tale. */
+  mode: "protagonist" | "narrator";
+  protagonist: Protagonist;
   voice: Voice | null;
   resolution: "480P" | "768P";
 };

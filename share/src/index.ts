@@ -100,7 +100,13 @@ const json = (data: unknown, req: Request, env: Env, status = 200) =>
   new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json", "cache-control": "no-store", ...cors(req, env) } });
 
 const str = (v: unknown, max: number) => (typeof v === "string" ? v.slice(0, max) : "");
-const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+const num = (v: unknown) => {
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  // Query params arrive as strings — the binary /media upload reads scene
+  // from the query, and without this every video landed on scene 0.
+  if (typeof v === "string" && v.trim() !== "" && Number.isFinite(Number(v))) return Number(v);
+  return 0;
+};
 
 function falUrl(v: unknown): string | null {
   if (typeof v !== "string" || !v) return null;
@@ -609,13 +615,681 @@ async function voices(req: Request, env: Env, path: string) {
   throw new HttpError(404, "not found");
 }
 
-async function route(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-  const url = new URL(req.url);
+// ---------------------------------------------------------- story projects
+// No-auth cloud save for image stories: D1 holds the project + scene text,
+// R2 holds the files (display image, full-size image, narration audio).
+// Ownership = random owner token, same pattern as films.
+
+type StorySceneRow = {
+  narration: string;
+  imagePrompt: string;
+  aiImagePrompt: string;
+  imageSource: string;
+  refScene: number | null;
+  refScenes: number[] | null;
+  audioSeconds: number | null;
+  captions: { text: string; start: number; end: number }[] | null;
+  image: string | null;
+  imageLarge: string | null;
+  audio: string | null;
+  quality: string;
+  voiceModel: string;
+  video: string | null;
+  videoRes: string;
+  videoDur: number;
+};
+
+type StoryRow = {
+  id: string;
+  owner_hash: string;
+  ip_hash: string;
+  created: number;
+  updated: number;
+  title: string;
+  subtitle: string;
+  topic: string;
+  style: string;
+  style_label: string;
+  lang: string;
+  lang_name: string;
+  voice: string;
+  voice_style: string;
+  scene_count: number;
+  aspect: string;
+  character_ref: string;
+  poster_prompt: string;
+  poster_h: string;
+  poster_v: string;
+  genre: string;
+  music_title: string;
+  music_url: string;
+  scenes: string;
+};
+
+const STORIES_PER_DAY = 20;
+const STORY_MEDIA_MAX = 8 * MB;
+/** Scene videos (mp4) run much larger than images/audio — own ceiling. Binary streaming keeps CPU near zero. */
+const STORY_VIDEO_MAX = 64 * MB;
+const STORY_MEDIA_TYPES: Record<string, string> = {
+  "image/jpeg": "jpg",
+  "image/png": "png",
+  "image/webp": "webp",
+  "audio/wav": "wav",
+  "audio/x-wav": "wav",
+  "audio/mpeg": "mp3",
+  "video/mp4": "mp4",
+  "video/webm": "webm",
+  "audio/x-m4a": "m4a",
+  "audio/aac": "aac",
+};
+const STORY_MEDIA_FIELDS: Record<string, "image" | "imageLarge" | "audio" | "video" | "music"> = {
+  image: "image",
+  "image-large": "imageLarge",
+  audio: "audio",
+  video: "video",
+  music: "music",
+};
+
+function storyUrl(req: Request, key: string | null, v?: number) {
+  return key ? `${new URL(req.url).origin}/s/${key}${v ? `?v=${v}` : ""}` : null;
+}
+
+/** Write one scene media reference with optimistic concurrency (see storyMedia). */
+async function commitSceneKey(env: Env, id: string, scene: number, field: "image" | "imageLarge" | "audio" | "video", key: string) {
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const fresh = await env.DB.prepare("SELECT * FROM story_projects WHERE id = ?").bind(id).first<StoryRow>();
+    if (!fresh) throw new HttpError(404, "story not found");
+    const scenes = readScenes(fresh);
+    if (scene >= scenes.length) throw new HttpError(400, "bad media upload");
+    scenes[scene][field] = key;
+    const t = now();
+    const res = await env.DB.prepare("UPDATE story_projects SET updated = ?, scene_count = ?, scenes = ? WHERE id = ? AND updated = ?")
+      .bind(t, scenes.length, JSON.stringify(scenes), id, fresh.updated)
+      .run();
+    if ((res.meta.changes ?? 0) > 0) return t;
+    await new Promise((r) => setTimeout(r, 150 * (attempt + 1) + Math.random() * 150));
+  }
+  throw new HttpError(409, "concurrent update — please retry the upload");
+}
+
+/** Remove sibling files after a deterministic put (legacy stamped versions, other exts). */
+async function cleanSiblings(env: Env, id: string, prefix: string, keep: string) {
+  const stale = await env.MEDIA.list({ prefix: `stories/${id}/${prefix}`, limit: 100 });
+  const others = stale.objects.map((o) => o.key).filter((k) => k !== keep);
+  if (others.length) await env.MEDIA.delete(others);
+}
+
+function parseScenes(v: unknown, max = 40): StorySceneRow[] {
+  if (!Array.isArray(v)) return [];
+  return v.slice(0, max).map((x) => {
+    const o = (x ?? {}) as Record<string, unknown>;
+    const rawRef = o.refScene;
+    const rawRefs = Array.isArray(o.refScenes) ? (o.refScenes as unknown[]) : null;
+    const listRefs = rawRefs
+      ? rawRefs.filter((k) => Number.isInteger(k) && (k as number) >= 0).slice(0, 8) as number[]
+      : null;
+    return {
+      narration: str(o.narration, 1200),
+      imagePrompt: str(o.imagePrompt ?? o.moment, 800),
+      aiImagePrompt: str(o.aiImagePrompt ?? o.depiction, 1000),
+      imageSource: o.imageSource === "ai" ? "ai" : "moment",
+      refScene: Number.isInteger(rawRef) && (rawRef as number) >= 0 ? (rawRef as number) : null,
+      refScenes: listRefs && listRefs.length ? listRefs : null,
+      audioSeconds: num(o.audioSeconds) > 0 ? Math.round(num(o.audioSeconds) * 10) / 10 : null,
+      captions: Array.isArray(o.captions)
+        ? (o.captions as unknown[])
+            .filter((w) => w && typeof (w as Record<string, unknown>).text === "string" && String((w as Record<string, unknown>).text).trim())
+            .slice(0, 400)
+            .map((w) => {
+              const c = w as Record<string, unknown>;
+              return { text: String(c.text).trim().slice(0, 60), start: num(c.start) || 0, end: num(c.end) || 0 };
+            })
+        : null,
+      quality: ["512px", "1K", "2K", "4K"].includes(str(o.quality, 8)) ? str(o.quality, 8) : "2K",
+      voiceModel: ["gemini-3.8-flash-tts", "gemini-3.8-flash-lite-tts"].includes(str(o.voiceModel, 40))
+        ? str(o.voiceModel, 40)
+        : "gemini-3.8-flash-tts",
+      video: null,
+      videoRes: ["360p", "720p", "1080p"].includes(str(o.videoRes, 8)) ? str(o.videoRes, 8) : "360p",
+      videoDur: [3, 5, 8, 10].includes(num(o.videoDur)) ? Math.floor(num(o.videoDur)) : 3,
+      image: null,
+      imageLarge: null,
+      audio: null,
+    };
+  });
+}
+
+function readScenes(row: StoryRow): StorySceneRow[] {
+  try {
+    const arr = JSON.parse(row.scenes) as StorySceneRow[];
+    return Array.isArray(arr) ? arr : [];
+  } catch {
+    return [];
+  }
+}
+
+function toStoryList(req: Request, row: StoryRow) {
+  const scenes = readScenes(row);
+  return {
+    id: row.id,
+    title: row.title,
+    subtitle: row.subtitle,
+    topic: row.topic,
+    style_label: row.style_label,
+    lang: row.lang,
+    voice: row.voice,
+    aspect: row.aspect,
+    scene_count: scenes.length,
+    images: scenes.filter((s) => s.image).length,
+    audios: scenes.filter((s) => s.audio).length,
+    duration: Math.round(scenes.reduce((a, s) => a + (s.audioSeconds ?? 0), 0) * 10) / 10,
+    created: row.created,
+    updated: row.updated,
+    thumb: storyUrl(req, row.poster_h || scenes.find((s) => s.image)?.image || null, row.updated),
+  };
+}
+
+function toStoryFull(req: Request, row: StoryRow) {
+  const scenes = readScenes(row);
+  return {
+    id: row.id,
+    title: row.title,
+    subtitle: row.subtitle,
+    topic: row.topic,
+    style: row.style,
+    style_label: row.style_label,
+    lang: row.lang,
+    lang_name: row.lang_name,
+    voice: row.voice,
+    voice_style: row.voice_style,
+    scene_count: row.scene_count,
+    aspect: row.aspect,
+    character_ref: row.character_ref,
+    poster_prompt: row.poster_prompt,
+    poster_h: storyUrl(req, row.poster_h || null, row.updated),
+    poster_v: storyUrl(req, row.poster_v || null, row.updated),
+    genre: row.genre || "edukasi",
+    music_title: row.music_title,
+    music_url: storyUrl(req, row.music_url || null, row.updated),
+    created: row.created,
+    updated: row.updated,
+    scenes: scenes.map((s, i) => ({
+      index: i,
+      narration: s.narration,
+      imagePrompt: s.imagePrompt,
+      aiImagePrompt: s.aiImagePrompt,
+      imageSource: s.imageSource,
+      refScene: s.refScene,
+      refScenes: s.refScenes,
+      audioSeconds: s.audioSeconds,
+      captions: s.captions,
+      quality: s.quality,
+      voiceModel: s.voiceModel,
+      video: storyUrl(req, s.video, row.updated),
+      videoRes: s.videoRes,
+      videoDur: s.videoDur,
+      image: storyUrl(req, s.image, row.updated),
+      imageLarge: storyUrl(req, s.imageLarge, row.updated),
+      audio: storyUrl(req, s.audio, row.updated),
+    })),
+  };
+}
+
+async function storyOwner(req: Request, env: Env, id: string) {
+  const row = await env.DB.prepare("SELECT * FROM story_projects WHERE id = ?").bind(id).first<StoryRow>();
+  if (!row) throw new HttpError(404, "story not found");
+  const token = (req.headers.get("authorization") ?? "").replace(/^Owner\s+/i, "");
+  if (!token || !same(await sha256(token), row.owner_hash)) throw new HttpError(403, "this browser did not create that story");
+  return row;
+}
+
+async function createStory(req: Request, env: Env) {
+  const body = (await req.json().catch(() => null)) as { id?: unknown; project?: Record<string, unknown> } | null;
+  const p = body?.project;
+  if (!p) throw new HttpError(400, "no story in the request");
+  const ip = await ipHash(req, env);
+  const t = now();
+  const used = await env.DB.prepare("SELECT COUNT(*) AS n FROM story_projects WHERE ip_hash = ? AND created > ?")
+    .bind(ip, t - DAY)
+    .first<{ n: number }>();
+  if ((used?.n ?? 0) >= STORIES_PER_DAY) throw new HttpError(429, "you have created a lot of stories today");
+
+  let id = /^[A-Za-z0-9]{8,12}$/.test(str(body.id, 12)) ? str(body.id, 12) : randomId(10);
+  if (await env.DB.prepare("SELECT id FROM story_projects WHERE id = ?").bind(id).first()) id = randomId(10);
+  const scenes = parseScenes(p.scenes);
+  const owner = randomId(32);
+  await env.DB.prepare(
+    `INSERT INTO story_projects (id, owner_hash, ip_hash, created, updated, title, subtitle, topic, style, style_label,
+      lang, lang_name, voice, voice_style, scene_count, aspect, character_ref, poster_prompt, genre, music_title, scenes)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+  )
+    .bind(
+      id,
+      await sha256(owner),
+      ip,
+      t,
+      t,
+      str(p.title, 120),
+      str(p.subtitle, 160),
+      str(p.topic, 600),
+      str(p.style, 60),
+      str(p.styleLabel ?? p.style_label, 80),
+      str(p.lang, 12) || "id",
+      str(p.langName ?? p.lang_name, 60),
+      str(p.voice, 60),
+      str(p.voiceStyle ?? p.voice_style, 300),
+      scenes.length,
+      ["16:9", "9:16", "1:1", "4:3", "21:9"].includes(str(p.aspect, 8)) ? str(p.aspect, 8) : "16:9",
+      str(p.characterRef, 500).startsWith("data:") ? "" : str(p.characterRef, 500),
+      str(p.posterPrompt ?? p.poster_prompt, 800),
+      str(p.genre, 40) || "edukasi",
+      str(p.musicTitle ?? p.music_title, 160),
+      JSON.stringify(scenes),
+    )
+    .run();
+  return json({ id, owner }, req, env, 201);
+}
+
+async function patchStory(req: Request, env: Env, id: string) {
+  const row = await storyOwner(req, env, id);
+  const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
+  const next = parseScenes(body.scenes, 40);
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const fresh = await env.DB.prepare("SELECT * FROM story_projects WHERE id = ?").bind(id).first<StoryRow>();
+    if (!fresh) throw new HttpError(404, "story not found");
+    const prev = readScenes(fresh);
+    // Preserve R2 keys by index — media is managed via /media only.
+    const merged = next.map((s, i) => ({ ...s, image: prev[i]?.image ?? null, imageLarge: prev[i]?.imageLarge ?? null, audio: prev[i]?.audio ?? null, video: (prev[i] as StorySceneRow | undefined)?.video ?? null }));
+    const res = await env.DB.prepare(
+      `UPDATE story_projects SET updated = ?, title = ?, subtitle = ?, voice = ?, voice_style = ?, scene_count = ?, poster_prompt = ?, genre = ?, music_title = ?, scenes = ? WHERE id = ? AND updated = ?`,
+    )
+      .bind(
+        now(),
+        body.title === undefined ? fresh.title : str(body.title, 120),
+        body.subtitle === undefined ? fresh.subtitle : str(body.subtitle, 160),
+        body.voice === undefined ? fresh.voice : str(body.voice, 60),
+        body.voiceStyle === undefined ? fresh.voice_style : str(body.voiceStyle, 300),
+        merged.length,
+        body.posterPrompt === undefined ? fresh.poster_prompt : str(body.posterPrompt, 800),
+        body.genre === undefined ? fresh.genre : str(body.genre, 40) || "edukasi",
+        body.musicTitle === undefined ? fresh.music_title : str(body.musicTitle, 160),
+        JSON.stringify(merged),
+        id,
+        fresh.updated,
+      )
+      .run();
+    if ((res.meta.changes ?? 0) > 0) return json({ id, updated: now() }, req, env);
+    await new Promise((r) => setTimeout(r, 150 * (attempt + 1) + Math.random() * 150));
+  }
+  throw new HttpError(409, "concurrent update — please retry");
+}
+
+async function storyPoster(req: Request, env: Env, id: string) {
+  await storyOwner(req, env, id);
+  const body = (await req.json().catch(() => ({}))) as { which?: unknown; contentType?: unknown; data?: unknown };
+  const which = str(body.which, 8);
+  if (which !== "h" && which !== "v") throw new HttpError(400, "which must be h or v");
+  const mime = str(body.contentType, 40).toLowerCase();
+  const data = typeof body.data === "string" ? body.data : "";
+  if (!["image/png", "image/jpeg", "image/webp"].includes(mime) || !data.startsWith("data:")) throw new HttpError(400, "bad poster upload");
+  const bytes = Math.floor((data.length - data.indexOf(",") - 1) * 0.75);
+  if (bytes <= 0 || bytes > STORY_MEDIA_MAX) throw new HttpError(413, "the file is too large");
+  const bin = Uint8Array.from(atob(data.slice(data.indexOf(",") + 1)), (c) => c.charCodeAt(0));
+  // Deterministic key: same scene+kind always lands on the same object, so a
+  // retry or a later adopt can never orphan or duplicate it. Put first, then
+  // delete legacy stamped siblings.
+  const key = `stories/${id}/poster-${which}.${mime === "image/png" ? "png" : mime === "image/webp" ? "webp" : "jpg"}`;
+  await env.MEDIA.put(key, bin, { httpMetadata: { contentType: mime, cacheControl: "public, max-age=31536000, immutable" } });
+  await cleanSiblings(env, id, `poster-${which}`, key);
+  const col = which === "h" ? "poster_h" : "poster_v";
+  const t = now();
+  await env.DB.prepare(`UPDATE story_projects SET updated = ?, ${col} = ? WHERE id = ?`).bind(t, key, id).run();
+  return json({ url: storyUrl(req, key, t), which }, req, env, 201);
+}
+
+async function storyMedia(req: Request, env: Env, id: string) {
+  const row = await storyOwner(req, env, id);
+  const ctype = req.headers.get("content-type") || "";
+  // Binary mode (used by large files): raw bytes in the body, metadata in the
+  // query. Streams straight into R2 — no base64, no giant JSON parse, so no
+  // CPU-limit death on 20MB+ videos.
+  if (!ctype.includes("application/json")) {
+    const q = new URL(req.url).searchParams;
+    const scene = Math.floor(num(q.get("scene")));
+    const kind = str(q.get("kind"), 16);
+    const field = STORY_MEDIA_FIELDS[kind];
+    const mime = ctype.split(";")[0].trim().toLowerCase();
+    const type = STORY_MEDIA_TYPES[mime];
+    const scenes = readScenes(row);
+    if (!field || field === "music" || !type || scene < 0 || scene >= scenes.length) throw new HttpError(400, "bad media upload");
+    const len = Number(req.headers.get("content-length"));
+    const cap = kind === "video" ? STORY_VIDEO_MAX : STORY_MEDIA_MAX;
+    if (!len || len <= 0 || len > cap) throw new HttpError(413, `the file is too large (max ${cap / MB}MB)`);
+    if (!req.body) throw new HttpError(400, "empty body");
+    const nn = String(scene).padStart(2, "0");
+    const key = `stories/${id}/${kind}-${nn}.${type}`;
+    await env.MEDIA.put(key, req.body, { httpMetadata: { contentType: mime, cacheControl: "public, max-age=31536000, immutable" } });
+    await cleanSiblings(env, id, `${kind}-${nn}`, key);
+    const t = await commitSceneKey(env, id, scene, field as "image" | "imageLarge" | "audio" | "video", key);
+    return json({ url: storyUrl(req, key, t), scene, kind }, req, env, 201);
+  }
+  const body = (await req.json().catch(() => ({}))) as { scene?: unknown; kind?: unknown; contentType?: unknown; data?: unknown };
+  const scene = Math.floor(num(body.scene));
+  const field = STORY_MEDIA_FIELDS[str(body.kind, 16)];
+  const type = STORY_MEDIA_TYPES[str(body.contentType, 40).toLowerCase()];
+  const data = typeof body.data === "string" ? body.data : "";
+  const scenes = readScenes(row);
+  const kind = str(body.kind, 16);
+  if (kind === "music") {
+    // Project-level background track (no scene). Replaces any previous one.
+    const mime = str(body.contentType, 40).toLowerCase();
+    const ext = mime === "audio/mpeg" ? "mp3" : mime === "audio/wav" || mime === "audio/x-wav" ? "wav" : mime === "audio/mp4" || mime === "audio/x-m4a" || mime === "audio/aac" ? "m4a" : "";
+    const data = typeof body.data === "string" ? body.data : "";
+    if (!ext || !data.startsWith("data:")) throw new HttpError(400, "bad music upload");
+    const bytes = Math.floor((data.length - data.indexOf(",") - 1) * 0.75);
+    if (bytes <= 0 || bytes > STORY_MEDIA_MAX) throw new HttpError(413, "the file is too large");
+    const bin = Uint8Array.from(atob(data.slice(data.indexOf(",") + 1)), (c) => c.charCodeAt(0));
+    const key = `stories/${id}/music.${ext}`;
+    await env.MEDIA.put(key, bin, { httpMetadata: { contentType: mime, cacheControl: "public, max-age=31536000, immutable" } });
+    await cleanSiblings(env, id, "music", key);
+    const t = now();
+    await env.DB.prepare("UPDATE story_projects SET updated = ?, music_url = ? WHERE id = ?").bind(t, key, id).run();
+    return json({ url: storyUrl(req, key, t), kind }, req, env, 201);
+  }
+  if (!field || !type || !data.startsWith("data:") || scene < 0 || scene >= scenes.length) throw new HttpError(400, "bad media upload");
+  const bytes = Math.floor((data.length - data.indexOf(",") - 1) * 0.75);
+  const cap = kind === "video" ? STORY_VIDEO_MAX : STORY_MEDIA_MAX;
+  if (bytes <= 0 || bytes > cap) throw new HttpError(413, `the file is too large (max ${cap / MB}MB)`);
+  const bin = Uint8Array.from(atob(data.slice(data.indexOf(",") + 1)), (c) => c.charCodeAt(0));
+  const nn = String(scene).padStart(2, "0");
+  const key = `stories/${id}/${kind}-${nn}.${type}`;
+  await env.MEDIA.put(key, bin, { httpMetadata: { contentType: str(body.contentType, 40).toLowerCase(), cacheControl: "public, max-age=31536000, immutable" } });
+  await cleanSiblings(env, id, `${kind}-${nn}`, key);
+  const t = await commitSceneKey(env, id, scene, field as "image" | "imageLarge" | "audio" | "video", key);
+  return json({ url: storyUrl(req, key, t), scene, kind }, req, env, 201);
+}
+
+const ADOPT_EXTS: Record<string, string[]> = {
+  image: ["jpg", "png", "webp"],
+  "image-large": ["jpg", "png", "webp"],
+  audio: ["wav", "mp3"],
+  video: ["mp4", "webm"],
+};
+
+/**
+ * Re-link a file that reached R2 but whose DB reference was lost (refresh
+ * during upload, crashed tab). Deterministic keys make the file findable.
+ */
+async function adoptMedia(req: Request, env: Env, id: string) {
+  const row = await storyOwner(req, env, id);
+  const body = (await req.json().catch(() => ({}))) as { scene?: unknown; kind?: unknown };
+  const scene = Math.floor(num(body.scene));
+  const kind = str(body.kind, 16);
+  const field = STORY_MEDIA_FIELDS[kind];
+  const exts = ADOPT_EXTS[kind];
+  const scenes = readScenes(row);
+  if (!field || !exts || field === "music" || scene < 0 || scene >= scenes.length) throw new HttpError(400, "bad adopt request");
+  if (scenes[scene][field as "image" | "imageLarge" | "audio" | "video"]) return json({ url: storyUrl(req, scenes[scene][field as "image" | "imageLarge" | "audio" | "video"], row.updated), scene, kind, adopted: false }, req, env);
+  const nn = String(scene).padStart(2, "0");
+  for (const ext of exts) {
+    const key = `stories/${id}/${kind}-${nn}.${ext}`;
+    if (await env.MEDIA.head(key)) {
+      const t = await commitSceneKey(env, id, scene, field as "image" | "imageLarge" | "audio" | "video", key);
+      return json({ url: storyUrl(req, key, t), scene, kind, adopted: true }, req, env);
+    }
+  }
+  // Legacy fallback: pre-deterministic stamped files ({kind}-{nn}-{stamp}.ext).
+  const legacy = await env.MEDIA.list({ prefix: `stories/${id}/${kind}-${nn}-`, limit: 20 });
+  const cands = legacy.objects.map((o) => o.key).filter((k) => /\.(mp4|webm|wav|mp3|jpg|png|webp)$/i.test(k)).sort();
+  if (cands.length) {
+    const key = cands[cands.length - 1];
+    const t = await commitSceneKey(env, id, scene, field as "image" | "imageLarge" | "audio" | "video", key);
+    return json({ url: storyUrl(req, key, t), scene, kind, adopted: true }, req, env);
+  }
+  throw new HttpError(404, "no saved file for that scene");
+}
+
+async function deleteStory(req: Request, env: Env, id: string) {
+  await storyOwner(req, env, id);
+  const listed = await env.MEDIA.list({ prefix: `stories/${id}/` });
+  if (listed.objects.length) await env.MEDIA.delete(listed.objects.map((o) => o.key));
+  await env.DB.prepare("DELETE FROM story_projects WHERE id = ?").bind(id).run();
+  return json({ ok: true }, req, env);
+}
+
+async function serveStoryMedia(req: Request, env: Env, key: string) {
+  const obj = await env.MEDIA.get(key, { range: req.headers, onlyIf: req.headers });
+  if (!obj) return new Response("not found", { status: 404 });
+  const headers = new Headers({
+    "access-control-allow-origin": "*",
+    "accept-ranges": "bytes",
+    "x-content-type-options": "nosniff",
+    "cache-control": "public, max-age=31536000, immutable",
+  });
+  obj.writeHttpMetadata(headers);
+  headers.set("etag", obj.httpEtag);
+  if (!("body" in obj)) return new Response(null, { status: 304, headers });
+  const range = obj.range as { offset?: number; length?: number; suffix?: number } | undefined;
+  if (range && req.headers.has("range")) {
+    const offset = range.suffix !== undefined ? obj.size - range.suffix : (range.offset ?? 0);
+    const length = range.suffix !== undefined ? range.suffix : (range.length ?? obj.size - offset);
+    headers.set("content-range", `bytes ${offset}-${offset + length - 1}/${obj.size}`);
+    headers.set("content-length", String(length));
+    return new Response(req.method === "HEAD" ? null : obj.body, { status: 206, headers });
+  }
+  headers.set("content-length", String(obj.size));
+  return new Response(req.method === "HEAD" ? null : obj.body, { headers });
+}
+
+// ---------------------------------------------------------- characters
+// Global catalog, no auth. Images live in R2 (characters/{id}/{kind}.ext).
+
+type CharacterRow = {
+  id: string;
+  name: string;
+  personality: string;
+  group_name: string;
+  style: string;
+  style_label: string;
+  traits: string;
+  pronoun: string;
+  voice_id: string;
+  voice_name: string;
+  voice_gender: string;
+  voice_age: string;
+  voice_accent: string;
+  voice_desc: string;
+  thumb: string;
+  hero: string;
+  sheet: string;
+  sort: number;
+  created: number;
+  updated: number;
+};
+
+const CHARACTER_IMG_KINDS = ["thumb", "hero", "sheet"] as const;
+
+function charUrl(req: Request, key: string | null) {
+  return key ? `${new URL(req.url).origin}/s/${key}` : "";
+}
+
+function toCharacter(req: Request, row: CharacterRow) {
+  return {
+    id: row.id,
+    name: row.name,
+    personality: row.personality,
+    group: row.group_name,
+    style: row.style,
+    style_label: row.style_label,
+    traits: row.traits,
+    pronoun: row.pronoun,
+    voice: {
+      voice_id: row.voice_id,
+      name: row.voice_name,
+      gender: row.voice_gender,
+      age: row.voice_age,
+      accent: row.voice_accent,
+      description: row.voice_desc,
+    },
+    thumb: charUrl(req, row.thumb),
+    hero: charUrl(req, row.hero),
+    sheet: charUrl(req, row.sheet),
+    created: row.created,
+    updated: row.updated,
+  };
+}
+
+function charId(v: unknown, fallback: string) {
+  const s = str(v, 40).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  return s || fallback;
+}
+
+async function createCharacter(req: Request, env: Env) {
+  const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
+  const name = str(body.name, 80).trim();
+  if (!name) throw new HttpError(400, "the character needs a name");
+  let id = charId(body.id, randomId(8));
+  if (await env.DB.prepare("SELECT id FROM characters WHERE id = ?").bind(id).first()) id = `${id}-${randomId(4)}`.slice(0, 40);
+  const t = now();
+  const voice = (body.voice ?? {}) as Record<string, unknown>;
+  await env.DB.prepare(
+    `INSERT INTO characters (id, name, personality, group_name, style, style_label, traits, pronoun,
+      voice_id, voice_name, voice_gender, voice_age, voice_accent, voice_desc, sort, created, updated)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+  )
+    .bind(
+      id, name, str(body.personality, 500), str(body.group, 60), str(body.style, 60), str(body.styleLabel ?? body.style_label, 80),
+      str(body.traits, 600), ["his", "her", "its"].includes(str(body.pronoun, 8)) ? str(body.pronoun, 8) : "its",
+      str(voice.voice_id, 80), str(voice.name, 160), str(voice.gender, 24), str(voice.age, 24), str(voice.accent, 40), str(voice.description, 600),
+      Math.floor(num((body as Record<string, unknown>).sort)), t, t,
+    )
+    .run();
+  const row = await env.DB.prepare("SELECT * FROM characters WHERE id = ?").bind(id).first<CharacterRow>();
+  return json({ character: row ? toCharacter(req, row) : { id } }, req, env, 201);
+}
+
+async function patchCharacter(req: Request, env: Env, id: string) {
+  const row = await env.DB.prepare("SELECT * FROM characters WHERE id = ?").bind(id).first<CharacterRow>();
+  if (!row) throw new HttpError(404, "character not found");
+  const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
+  const voice = (body.voice ?? {}) as Record<string, unknown>;
+  await env.DB.prepare(
+    `UPDATE characters SET name = ?, personality = ?, group_name = ?, style = ?, style_label = ?, traits = ?, pronoun = ?,
+      voice_id = ?, voice_name = ?, voice_gender = ?, voice_age = ?, voice_accent = ?, voice_desc = ?, sort = ?, updated = ? WHERE id = ?`,
+  )
+    .bind(
+      body.name === undefined ? row.name : str(body.name, 80).trim() || row.name,
+      body.personality === undefined ? row.personality : str(body.personality, 500),
+      body.group === undefined ? row.group_name : str(body.group, 60),
+      body.style === undefined ? row.style : str(body.style, 60),
+      body.styleLabel === undefined && body.style_label === undefined ? row.style_label : str(body.styleLabel ?? body.style_label, 80),
+      body.traits === undefined ? row.traits : str(body.traits, 600),
+      body.pronoun === undefined ? row.pronoun : (["his", "her", "its"].includes(str(body.pronoun, 8)) ? str(body.pronoun, 8) : row.pronoun),
+      voice.voice_id === undefined ? row.voice_id : str(voice.voice_id, 80),
+      voice.name === undefined ? row.voice_name : str(voice.name, 160),
+      voice.gender === undefined ? row.voice_gender : str(voice.gender, 24),
+      voice.age === undefined ? row.voice_age : str(voice.age, 24),
+      voice.accent === undefined ? row.voice_accent : str(voice.accent, 40),
+      voice.description === undefined ? row.voice_desc : str(voice.description, 600),
+      body.sort === undefined ? row.sort : Math.floor(num(body.sort)),
+      now(), id,
+    )
+    .run();
+  const updated = await env.DB.prepare("SELECT * FROM characters WHERE id = ?").bind(id).first<CharacterRow>();
+  return json({ character: updated ? toCharacter(req, updated) : { id } }, req, env);
+}
+
+async function deleteCharacter(req: Request, env: Env, id: string) {
+  const row = await env.DB.prepare("SELECT * FROM characters WHERE id = ?").bind(id).first<CharacterRow>();
+  if (!row) throw new HttpError(404, "character not found");
+  const listed = await env.MEDIA.list({ prefix: `characters/${id}/` });
+  if (listed.objects.length) await env.MEDIA.delete(listed.objects.map((o) => o.key));
+  await env.DB.prepare("DELETE FROM characters WHERE id = ?").bind(id).run();
+  return json({ ok: true }, req, env);
+}
+
+async function characterImage(req: Request, env: Env, id: string) {
+  const row = await env.DB.prepare("SELECT * FROM characters WHERE id = ?").bind(id).first<CharacterRow>();
+  if (!row) throw new HttpError(404, "character not found");
+  const body = (await req.json().catch(() => ({}))) as { kind?: unknown; url?: unknown; contentType?: unknown; data?: unknown };
+  const kind = str(body.kind, 16);
+  if (!CHARACTER_IMG_KINDS.includes(kind as (typeof CHARACTER_IMG_KINDS)[number])) throw new HttpError(400, "kind must be thumb, hero or sheet");
+  let bytes: Uint8Array;
+  let type: string;
+  if (typeof body.url === "string" && /^https?:\/\//.test(body.url)) {
+    // Server-side import: no browser CORS involved.
+    const r = await fetch(body.url.slice(0, 1000), { headers: { "accept-encoding": "identity" } });
+    if (!r.ok) throw new HttpError(422, `could not fetch the image (${r.status})`);
+    type = (r.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase();
+    if (!["image/png", "image/jpeg", "image/webp"].includes(type)) throw new HttpError(422, "that file is not a supported image");
+    const buf = await r.arrayBuffer();
+    if (!buf.byteLength || buf.byteLength > STORY_MEDIA_MAX) throw new HttpError(413, "the image is too large");
+    bytes = new Uint8Array(buf);
+  } else {
+    const data = typeof body.data === "string" ? body.data : "";
+    type = STORY_MEDIA_TYPES[str(body.contentType, 40).toLowerCase()] ? str(body.contentType, 40).toLowerCase() : "";
+    if (!data.startsWith("data:") || !type.startsWith("image/")) throw new HttpError(400, "bad image upload");
+    const size = Math.floor((data.length - data.indexOf(",") - 1) * 0.75);
+    if (size <= 0 || size > STORY_MEDIA_MAX) throw new HttpError(413, "the image is too large");
+    bytes = Uint8Array.from(atob(data.slice(data.indexOf(",") + 1)), (c) => c.charCodeAt(0));
+  }
+  const ext = type === "image/png" ? "png" : type === "image/webp" ? "webp" : "jpg";
+  const key = `characters/${id}/${kind}.${ext}`;
+  // Remove a stale sibling with another extension first.
+  const listed = await env.MEDIA.list({ prefix: `characters/${id}/${kind}.` });
+  if (listed.objects.length) await env.MEDIA.delete(listed.objects.map((o) => o.key));
+  await env.MEDIA.put(key, bytes, { httpMetadata: { contentType: type, cacheControl: "public, max-age=31536000, immutable" } });
+  const col = kind === "thumb" ? "thumb" : kind === "hero" ? "hero" : "sheet";
+  await env.DB.prepare(`UPDATE characters SET ${col} = ?, updated = ? WHERE id = ?`).bind(key, now(), id).run();
+  return json({ url: charUrl(req, key), kind }, req, env, 201);
+}
+
+async function route(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {  const url = new URL(req.url);
   const path = url.pathname;
   const m = req.method;
 
   if (m === "OPTIONS") return new Response(null, { status: 204, headers: cors(req, env) });
   if ((m === "GET" || m === "HEAD") && path.startsWith("/m/media/")) return serveMedia(req, env, ctx, decodeURIComponent(path.slice(3)));
+  // Public R2 surfaces only: stories/ + characters/ + styles/. Never private/ (voices catalog).
+  if ((m === "GET" || m === "HEAD") && (path.startsWith("/s/stories/") || path.startsWith("/s/characters/") || path.startsWith("/s/styles/")))
+    return serveStoryMedia(req, env, decodeURIComponent(path.slice(3)));
+
+  if (path === "/api/stories" && m === "POST") return createStory(req, env);
+  if (path === "/api/characters" && m === "POST") return createCharacter(req, env);
+  if (path === "/api/characters" && m === "GET") {
+    const rows = await env.DB.prepare("SELECT * FROM characters ORDER BY sort ASC, updated DESC LIMIT 200").all<CharacterRow>();
+    return json({ characters: rows.results.map((r) => toCharacter(req, r)) }, req, env);
+  }
+  const character = path.match(/^\/api\/characters\/([A-Za-z0-9-]{1,40})(\/images)?$/);
+  if (character) {
+    const [, id, images] = character;
+    if (images && m === "POST") return characterImage(req, env, id);
+    if (!images && m === "PATCH") return patchCharacter(req, env, id);
+    if (!images && m === "DELETE") return deleteCharacter(req, env, id);
+    if (!images && m === "GET") {
+      const row = await env.DB.prepare("SELECT * FROM characters WHERE id = ?").bind(id).first<CharacterRow>();
+      if (!row) throw new HttpError(404, "character not found");
+      return json({ character: toCharacter(req, row) }, req, env);
+    }
+  }
+  if (path === "/api/stories" && m === "GET") {
+    const rows = await env.DB.prepare("SELECT * FROM story_projects ORDER BY updated DESC LIMIT 100").all<StoryRow>();
+    return json({ stories: rows.results.map((r) => toStoryList(req, r)) }, req, env);
+  }
+  const story = path.match(/^\/api\/stories\/([A-Za-z0-9]{8,12})(\/media|\/poster|\/adopt)?$/);
+  if (story) {
+    const [, id, sub] = story;
+    if (sub === "/media" && m === "POST") return storyMedia(req, env, id);
+    if (sub === "/poster" && m === "POST") return storyPoster(req, env, id);
+    if (sub === "/adopt" && m === "POST") return adoptMedia(req, env, id);
+    if (!sub && m === "GET") {
+      const row = await env.DB.prepare("SELECT * FROM story_projects WHERE id = ?").bind(id).first<StoryRow>();
+      if (!row) throw new HttpError(404, "story not found");
+      return json({ story: toStoryFull(req, row) }, req, env);
+    }
+    if (!sub && m === "PATCH") return patchStory(req, env, id);
+    if (!sub && m === "DELETE") return deleteStory(req, env, id);
+  }
 
   if (path === "/api/share" && m === "POST") return share(req, env);
   if (path === "/api/issues" && m === "POST") return issue(req, env);

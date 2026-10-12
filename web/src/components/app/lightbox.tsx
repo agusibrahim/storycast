@@ -4,20 +4,21 @@ import { useCallback, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { FilmPlayer } from "@/components/app/film-player";
 import { SPRING_PANEL } from "@/lib/ease";
+import { dismissModal, useModalHash } from "@/lib/router";
 import { cn } from "@/lib/utils";
 
 export type LightboxItem = { url: string; kind: "image" | "video"; caption?: string };
 
 export async function downloadFile(url: string, name?: string) {
-  const blob = await fetch(url).then((r) => r.blob());
-  const href = URL.createObjectURL(blob);
+  // data: URLs can't go through fetch() under CSP — download them directly.
+  const href = url.startsWith("data:") ? url : URL.createObjectURL(await fetch(url).then((r) => r.blob()));
   const a = document.createElement("a");
   a.href = href;
-  a.download = name || url.split("/").pop() || "download";
+  a.download = name || "download";
   document.body.appendChild(a);
   a.click();
   a.remove();
-  setTimeout(() => URL.revokeObjectURL(href), 10_000);
+  if (!url.startsWith("data:")) setTimeout(() => URL.revokeObjectURL(href), 10_000);
 }
 
 export function Lightbox({ items, index, onIndex, onClose }: { items: LightboxItem[]; index: number | null; onIndex: (i: number) => void; onClose: () => void }) {
@@ -25,6 +26,9 @@ export function Lightbox({ items, index, onIndex, onClose }: { items: LightboxIt
   const [dir, setDir] = useState(0);
   const open = index !== null && items[index] !== undefined;
   const item = open ? items[index] : null;
+  const close = () => dismissModal("view", onClose);
+
+  useModalHash("view", open, onClose);
 
   const step = useCallback(
     (d: number) => {
@@ -38,7 +42,7 @@ export function Lightbox({ items, index, onIndex, onClose }: { items: LightboxIt
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") close();
       else if (e.key === "ArrowRight") step(1);
       else if (e.key === "ArrowLeft") step(-1);
     };
@@ -61,7 +65,7 @@ export function Lightbox({ items, index, onIndex, onClose }: { items: LightboxIt
           exit={{ opacity: 0 }}
           transition={{ duration: 0.2 }}
           className="fixed inset-0 z-[90] flex flex-col bg-background/80 [backdrop-filter:blur(18px)_saturate(140%)]"
-          onClick={onClose}
+          onClick={close}
           role="dialog"
           aria-modal="true"
           aria-label="Preview"
@@ -75,7 +79,7 @@ export function Lightbox({ items, index, onIndex, onClose }: { items: LightboxIt
               <button type="button" onClick={() => downloadFile(item.url)} aria-label="Download" className="flex size-9 items-center justify-center rounded-full text-muted-foreground hover:bg-muted hover:text-foreground">
                 <Download className="size-4" />
               </button>
-              <button type="button" onClick={onClose} aria-label="Close preview" className="flex size-9 items-center justify-center rounded-full text-muted-foreground hover:bg-muted hover:text-foreground">
+              <button type="button" onClick={close} aria-label="Close preview" className="flex size-9 items-center justify-center rounded-full text-muted-foreground hover:bg-muted hover:text-foreground">
                 <X className="size-4" />
               </button>
             </div>

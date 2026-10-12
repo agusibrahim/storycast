@@ -1,4 +1,5 @@
 import type { CastMember, Language, Style } from "@/lib/api";
+import { SHARE_API } from "@/lib/share";
 
 export type StyleFull = Style & { anchor: string; motion: string; character_hint: string; palette: { bg: string; text: string; accent: string }; ref: string };
 export type CastFull = CastMember & { traits: string; pronoun: string; voice: CastMember["voice"] & { gender?: string; age?: string; accent?: string; description?: string } };
@@ -15,7 +16,23 @@ export type StudioData = {
 
 let data: Promise<StudioData> | null = null;
 export function studioData(): Promise<StudioData> {
-  data ??= fetch("/data/config.json").then((r) => r.json());
+  data ??= (async () => {
+    const base = (await fetch("/data/config.json").then((r) => r.json())) as StudioData;
+    // Characters come from CF (D1+R2); static config is only the fallback.
+    try {
+      if (SHARE_API) {
+        const r = await fetch(`${SHARE_API}/api/characters`);
+        if (r.ok) {
+          const j = (await r.json()) as { characters?: CastFull[] };
+          if (Array.isArray(j.characters) && j.characters.length) {
+            base.characters = j.characters;
+            base.character_groups = [...new Set(j.characters.map((c) => c.group).filter(Boolean))];
+          }
+        }
+      }
+    } catch {}
+    return base;
+  })();
   return data;
 }
 

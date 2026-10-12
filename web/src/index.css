@@ -70,6 +70,7 @@
   --color-accent-foreground: var(--accent-foreground);
   --color-destructive: var(--destructive);
   --color-success: var(--success);
+  --color-warning: var(--warning);
   --color-border: var(--border);
   --color-border-strong: var(--border-strong);
   --color-input: var(--input);
@@ -148,6 +149,47 @@
   .animate-marquee-vertical {
     animation-play-state: paused;
   }
+}
+
+/* ---- image-story: sticky snap between form and studio (proximity = needs a firm scroll to pass) ---- */
+.story-snap {
+  scroll-snap-type: y proximity;
+}
+#create {
+  scroll-margin-top: 4.5rem;
+}
+#image-studio,
+#production {
+  scroll-snap-align: start;
+  scroll-margin-top: 4.5rem;
+}
+
+/* ---- image-story preview: Ken Burns drifts + flip-book stage ---- */
+@keyframes kb-drift-a {
+  from { transform: scale(1.02) translate(0, 0); }
+  to { transform: scale(1.14) translate(-1.5%, -2%); }
+}
+@keyframes kb-drift-b {
+  from { transform: scale(1.14) translate(1.5%, 1%); }
+  to { transform: scale(1.02) translate(0, 0); }
+}
+@keyframes kb-zoom-a {
+  from { transform: scale(1) translateY(1%); }
+  to { transform: scale(1.16) translateY(-1%); }
+}
+@keyframes kb-zoom-b {
+  from { transform: scale(1.16) translateY(-1%); }
+  to { transform: scale(1.04) translateY(1%); }
+}
+.kb-drift-a { animation: kb-drift-a 8s ease-in-out infinite alternate; }
+.kb-drift-b { animation: kb-drift-b 8s ease-in-out infinite alternate; }
+.kb-zoom-a { animation: kb-zoom-a 8s ease-in-out infinite alternate; }
+.kb-zoom-b { animation: kb-zoom-b 8s ease-in-out infinite alternate; }
+.preview-perspective { perspective: 1400px; }
+.preview-page {
+  transform-style: preserve-3d;
+  backface-visibility: hidden;
+  box-shadow: inset -40px 0 60px -30px rgb(0 0 0 / 0.55);
 }
 @layer base {
   body *:not(html) {
