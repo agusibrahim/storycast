@@ -1,46 +1,291 @@
 /**
- * Client for the Gemini router worker (minimal headers: content-type only).
+ * Direct Google Gemini client (no proxy/router worker).
  *
- * Endpoints used:
- * - POST {router}/v1beta/models/gemini-3.8-flash:generateContent   storyboard + text
- * - POST {router}/v1/images/generations                            image (b64_json, OpenAI shape)
- * - POST {router}/v1beta/models/gemini-3.8-flash-tts:generateContent  TTS (audio/wav inline)
- * - GET  {robin}/api/tts/token  voice catalog only (old worker, kept as fallback source)
+ * Endpoints hit directly at https://generativelanguage.googleapis.com:
+ * - POST https://android.googleapis.com/auth                         AAS master token -> ya29 OAuth bearer token
+ * - POST /v1beta/models/gemini-3.8-flash:generateContent             storyboard, research, edit & topic ideas
+ * - POST /v1beta/interactions (gemini-3.1-flash-image)               image generation with up to 14 reference images
+ * - POST /v1beta/interactions (gemini-omni-1.1-flash)                scene video generation (image_to_video / text_to_video)
+ * - POST /v1beta/interactions (gemini-3.8-flash-tts / lite-tts)      expressive narration synthesis (WAV 24kHz)
+ * - POST /v1beta/interactions (gemini-3.5-transcribe)                word-level caption timestamps
  */
 
-export const DEFAULT_ROUTER_BASE = "https://gemini-router.aguzz.workers.dev";
+import { SHARE_API } from "@/lib/share";
+
+export const GOOGLE_API_HOST = "https://generativelanguage.googleapis.com";
+export const DEFAULT_ROUTER_BASE = GOOGLE_API_HOST;
 const ROUTER_KEY = "storycast-router-base";
+const CUSTOM_AUTH_KEY = "storycast-gemini-auth";
 
 export function routerBase(): string {
   try {
-    const saved = localStorage.getItem(ROUTER_KEY);
-    if (saved) return saved.replace(/\/$/, "");
+    const saved = localStorage.getItem(ROUTER_KEY)?.trim().replace(/\/$/, "");
+    if (saved && !saved.includes("workers.dev")) return saved;
   } catch {}
-  const env = import.meta.env as Record<string, string | undefined>;
-  return (env.VITE_ROUTER_API || env.VITE_ROBIN_API)?.replace(/\/$/, "") || DEFAULT_ROUTER_BASE;
+  return GOOGLE_API_HOST;
 }
 
 export function setRouterBase(base: string) {
   try {
-    localStorage.setItem(ROUTER_KEY, base.trim().replace(/\/$/, ""));
+    const clean = base.trim().replace(/\/$/, "");
+    if (!clean || clean === GOOGLE_API_HOST || clean.includes("workers.dev")) {
+      localStorage.removeItem(ROUTER_KEY);
+    } else {
+      localStorage.setItem(ROUTER_KEY, clean);
+    }
   } catch {}
 }
 
-export const DEFAULT_ROBIN_BASE = "https://robin-image-gen.aguzz.workers.dev";
-const BASE_KEY = "storycast-robin-base";
-
-export function robinBase(): string {
+export function geminiAuthInput(): string {
   try {
-    const saved = localStorage.getItem(BASE_KEY);
-    if (saved) return saved.replace(/\/$/, "");
-  } catch {}
-  return (import.meta.env.VITE_ROBIN_API as string | undefined)?.replace(/\/$/, "") || DEFAULT_ROBIN_BASE;
+    return localStorage.getItem(CUSTOM_AUTH_KEY) ?? "";
+  } catch {
+    return "";
+  }
 }
 
-export function setRobinBase(base: string) {
+export function setGeminiAuthInput(val: string) {
   try {
-    localStorage.setItem(BASE_KEY, base.trim().replace(/\/$/, ""));
+    const clean = val.trim();
+    if (clean) localStorage.setItem(CUSTOM_AUTH_KEY, clean);
+    else localStorage.removeItem(CUSTOM_AUTH_KEY);
+    tokenCache.clear();
+    workerTokenCache = null;
   } catch {}
+}
+
+export const DEFAULT_ROBIN_BASE = GOOGLE_API_HOST;
+export const robinBase = () => GOOGLE_API_HOST;
+export const setRobinBase = (_base: string) => {
+  void _base;
+};
+
+// ------------------------------------------------ Direct Google AAS Auth Pool
+// Zero hardcoded secrets in repo: reads from Vite env (VITE_GOOGLE_AAS_ACCOUNTS /
+// VITE_GOOGLE_AAS_ACCOUNT_1..10), user Settings, or CF Worker /api/gemini-token.
+
+type GoogleAccount = {
+  id: string;
+  email: string;
+  authData: string;
+  active: boolean;
+  errorCount: number;
+  cooldownUntil: number;
+};
+
+function parseAccountList(): GoogleAccount[] {
+  const rawList: string[] = [];
+  const custom = geminiAuthInput();
+  if (custom && (custom.startsWith("aas_et/") || custom.includes("Token="))) {
+    rawList.push(...custom.split(/[\n;]+/).map((s) => s.trim()).filter(Boolean));
+  }
+  const env = import.meta.env as Record<string, string | undefined>;
+  for (let i = 1; i <= 10; i++) {
+    const v = env[`VITE_GOOGLE_AAS_ACCOUNT_${i}`];
+    if (v && v.trim()) rawList.push(v.trim());
+  }
+  if (env.VITE_GOOGLE_AAS_ACCOUNTS?.trim()) {
+    rawList.push(...env.VITE_GOOGLE_AAS_ACCOUNTS.split(/[\n,;]+/).map((s) => s.trim()).filter(Boolean));
+  }
+  return rawList.map((raw, idx) => {
+    const authData = raw.startsWith("aas_et/")
+      ? `androidId=3c4096cfd46caf54&Email=user%40gmail.com&Token=${encodeURIComponent(raw)}`
+      : raw;
+    const m = authData.match(/Email=([^&]+)/i);
+    const email = m ? decodeURIComponent(m[1]) : `account_${idx + 1}`;
+    return {
+      id: `acc_${idx + 1}`,
+      email,
+      authData,
+      active: true,
+      errorCount: 0,
+      cooldownUntil: cooldownMap.get(`acc_${idx + 1}`) ?? 0,
+    };
+  });
+}
+
+let roundRobinIdx = 0;
+const tokenCache = new Map<string, { token: string; expiresAt: number }>();
+const cooldownMap = new Map<string, number>();
+let workerTokenCache: { token: string; accountId: string; expiresAt: number } | null = null;
+
+function nextLocalAccount(): GoogleAccount | null {
+  const accounts = parseAccountList();
+  if (!accounts.length) return null;
+  const now = Date.now();
+  const ready = accounts.filter((a) => a.cooldownUntil <= now);
+  if (ready.length > 0) {
+    const chosen = ready[roundRobinIdx % ready.length];
+    roundRobinIdx = (roundRobinIdx + 1) % ready.length;
+    return chosen;
+  }
+  const sorted = [...accounts].sort((a, b) => a.cooldownUntil - b.cooldownUntil);
+  return sorted[0] ?? null;
+}
+
+async function markAccountError(accountId: string, status: number) {
+  tokenCache.delete(accountId);
+  cooldownMap.set(accountId, Date.now() + (status === 429 ? 60_000 : 120_000));
+  if (workerTokenCache && workerTokenCache.accountId === accountId) {
+    workerTokenCache = null;
+    if (SHARE_API) {
+      fetch(`${SHARE_API}/api/gemini-token`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ brokenAccountId: accountId }),
+      }).catch(() => {});
+    }
+  }
+}
+
+async function exchangeAASToken(account: GoogleAccount, signal?: AbortSignal): Promise<string> {
+  const now = Date.now();
+  const cached = tokenCache.get(account.id);
+  if (cached && cached.expiresAt > now + 60_000) return cached.token;
+
+  const params = new URLSearchParams(account.authData);
+  const androidId = params.get("androidId") || "3c4096cfd46caf54";
+  const email = params.get("Email") || account.email;
+  let masterToken = params.get("Token") || "";
+  if (masterToken.includes("%")) {
+    try {
+      masterToken = decodeURIComponent(masterToken);
+    } catch {}
+  }
+
+  const exchangeBody = new URLSearchParams({
+    androidId,
+    app: "com.google.android.googlequicksearchbox",
+    client_sig: "38918a453d07199354f8b19af05ec6562ced5788",
+    callerPkg: "com.google.android.googlequicksearchbox",
+    callerSig: "38918a453d07199354f8b19af05ec6562ced5788",
+    device_country: "id",
+    Email: email,
+    google_play_services_version: "263332035",
+    lang: "en_US",
+    sdk_version: "35",
+    service: "oauth2:https://www.googleapis.com/auth/generative-language",
+    source: "android",
+    Token: masterToken,
+  });
+
+  const res = await fetch("https://android.googleapis.com/auth", {
+    method: "POST",
+    signal,
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: exchangeBody.toString(),
+  });
+
+  if (!res.ok) {
+    await markAccountError(account.id, res.status);
+    throw new Error(`AAS Bearer Exchange Error (${res.status})`);
+  }
+
+  const text = await res.text();
+  for (const line of text.split("\n")) {
+    if (line.startsWith("Auth=")) {
+      const token = line.slice(5).trim();
+      tokenCache.set(account.id, { token, expiresAt: now + 45 * 60_000 });
+      return token;
+    }
+  }
+  await markAccountError(account.id, 401);
+  throw new Error("Google Auth response missing Auth= token");
+}
+
+async function getDirectAuth(signal?: AbortSignal): Promise<{ headers: Record<string, string>; urlSuffix: string; accountId: string }> {
+  const env = import.meta.env as Record<string, string | undefined>;
+  const custom = geminiAuthInput() || env.VITE_GEMINI_API_KEY?.trim() || "";
+  if (custom.startsWith("AIza")) {
+    return { headers: { "Content-Type": "application/json" }, urlSuffix: `?key=${encodeURIComponent(custom)}`, accountId: "apikey" };
+  }
+  if (custom.startsWith("ya29.")) {
+    return { headers: { "Content-Type": "application/json", Authorization: `Bearer ${custom}` }, urlSuffix: "", accountId: "ya29" };
+  }
+
+  // 1. Try local / build-time env accounts (VITE_GOOGLE_AAS_ACCOUNT_* or Settings)
+  const localAccounts = parseAccountList();
+  let lastErr: unknown;
+  for (let i = 0; i < localAccounts.length; i++) {
+    const acc = nextLocalAccount();
+    if (!acc) break;
+    try {
+      const token = await exchangeAASToken(acc, signal);
+      return { headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, urlSuffix: "", accountId: acc.id };
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+
+  // 2. Fetch short-lived ya29 token from Storycast CF Worker (keeps master aas_et/ in CF Worker secret env)
+  if (SHARE_API) {
+    const now = Date.now();
+    if (workerTokenCache && workerTokenCache.expiresAt > now + 60_000) {
+      return {
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${workerTokenCache.token}` },
+        urlSuffix: "",
+        accountId: workerTokenCache.accountId,
+      };
+    }
+    const r = await fetch(`${SHARE_API}/api/gemini-token`, { signal });
+    if (r.ok) {
+      const d = (await r.json()) as { token?: string; accountId?: string; expiresIn?: number };
+      if (d.token) {
+        workerTokenCache = {
+          token: d.token,
+          accountId: d.accountId || "worker",
+          expiresAt: now + (d.expiresIn || 2400) * 1000,
+        };
+        return {
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${d.token}` },
+          urlSuffix: "",
+          accountId: workerTokenCache.accountId,
+        };
+      }
+    } else {
+      lastErr = new Error(await errorMessage(r, `token endpoint answered ${r.status}`));
+    }
+  }
+
+  throw lastErr instanceof Error
+    ? lastErr
+    : new Error("No Gemini credential configured. Set GOOGLE_AAS_ACCOUNT_1 in Cloudflare Worker env, VITE_GOOGLE_AAS_ACCOUNT_1 in .env, or add a token in Settings.");
+}
+
+export async function geminiFetch(path: string, body: unknown, signal?: AbortSignal, maxRetries = 3): Promise<Response> {
+  const base = routerBase();
+  let lastRes: Response | null = null;
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    const auth = await getDirectAuth(signal);
+    const sep = path.includes("?") ? "&" : "?";
+    const url = auth.urlSuffix ? `${base}${path}${sep}${auth.urlSuffix.slice(1)}` : `${base}${path}`;
+    const res = await fetch(url, {
+      method: "POST",
+      signal,
+      headers: auth.headers,
+      body: typeof body === "string" ? body : JSON.stringify(body),
+    });
+    if (res.ok) return res;
+    lastRes = res;
+    if (res.status === 429 || res.status === 401 || res.status === 403) {
+      await markAccountError(auth.accountId, res.status);
+      continue;
+    }
+    if (res.status === 400 && attempt < maxRetries - 1) {
+      const clone = res.clone();
+      const errText = await clone.text().catch(() => "");
+      if (errText.includes("User location is not supported") || errText.includes("RESOURCE_EXHAUSTED")) {
+        await markAccountError(auth.accountId, 429);
+        continue;
+      }
+    }
+    if (res.status >= 500 && attempt < maxRetries - 1) {
+      await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
+      continue;
+    }
+    return res;
+  }
+  return lastRes!;
 }
 
 import type { Voice } from "@/lib/api";
@@ -50,15 +295,55 @@ const CHIRP_SAMPLES = new Set(
   "achernar achird algenib algieba alnilam aoede autonoe callirrhoe charon despina enceladus erinome fenrir gacrux iapetus kore laomedeia leda orus pulcherrima puck rasalgethi sadachbia sadaltager schedar sulafat umbriel vindemiatrix zephyr zubenelgenubi".split(" "),
 );
 
+export type RobinVoice = { name: string; gender: string; tone: string; description: string };
+
+/** All 30 official Google Gemini Studio Voices. */
+export const GEMINI_STUDIO_VOICES: Record<string, RobinVoice> = {
+  Achernar: { name: "Achernar", gender: "Female", tone: "Soft", description: "Soft & gentle voice" },
+  Achird: { name: "Achird", gender: "Male", tone: "Friendly", description: "Friendly & approachable voice" },
+  Algenib: { name: "Algenib", gender: "Male", tone: "Gravelly", description: "Gravelly & textured voice" },
+  Algieba: { name: "Algieba", gender: "Male", tone: "Smooth", description: "Smooth & resonant voice" },
+  Alnilam: { name: "Alnilam", gender: "Male", tone: "Firm", description: "Firm & steady voice" },
+  Aoede: { name: "Aoede", gender: "Female", tone: "Breezy", description: "Breezy & warm storyteller" },
+  Autonoe: { name: "Autonoe", gender: "Female", tone: "Bright", description: "Bright & clear voice" },
+  Callirrhoe: { name: "Callirrhoe", gender: "Female", tone: "Easy-going", description: "Easy-going & relaxed voice" },
+  Charon: { name: "Charon", gender: "Male", tone: "Informative", description: "Deep & informative narrator" },
+  Despina: { name: "Despina", gender: "Female", tone: "Smooth", description: "Smooth & flowing voice" },
+  Enceladus: { name: "Enceladus", gender: "Male", tone: "Breathy", description: "Breathy & intimate voice" },
+  Erinome: { name: "Erinome", gender: "Female", tone: "Clear", description: "Clear & articulate voice" },
+  Fenrir: { name: "Fenrir", gender: "Male", tone: "Excitable", description: "Excitable & authoritative voice" },
+  Gacrux: { name: "Gacrux", gender: "Female", tone: "Mature", description: "Mature & composed voice" },
+  Iapetus: { name: "Iapetus", gender: "Male", tone: "Clear", description: "Clear & balanced voice" },
+  Kore: { name: "Kore", gender: "Female", tone: "Friendly", description: "Soft, firm & friendly narrator" },
+  Laomedeia: { name: "Laomedeia", gender: "Female", tone: "Upbeat", description: "Upbeat & cheerful voice" },
+  Leda: { name: "Leda", gender: "Female", tone: "Youthful", description: "Youthful & expressive voice" },
+  Orus: { name: "Orus", gender: "Male", tone: "Firm", description: "Firm & confident voice" },
+  Puck: { name: "Puck", gender: "Male", tone: "Upbeat", description: "Upbeat & energetic storyteller" },
+  Pulcherrima: { name: "Pulcherrima", gender: "Female", tone: "Forward", description: "Forward & bright voice" },
+  Rasalgethi: { name: "Rasalgethi", gender: "Male", tone: "Informative", description: "Informative & thoughtful voice" },
+  Sadachbia: { name: "Sadachbia", gender: "Male", tone: "Lively", description: "Lively & animated voice" },
+  Sadaltager: { name: "Sadaltager", gender: "Male", tone: "Knowledgeable", description: "Knowledgeable & calm voice" },
+  Schedar: { name: "Schedar", gender: "Male", tone: "Even", description: "Even & composed voice" },
+  Sulafat: { name: "Sulafat", gender: "Female", tone: "Warm", description: "Warm & soothing voice" },
+  Umbriel: { name: "Umbriel", gender: "Male", tone: "Easy-going", description: "Easy-going & natural voice" },
+  Vindemiatrix: { name: "Vindemiatrix", gender: "Female", tone: "Gentle", description: "Gentle & kind voice" },
+  Zephyr: { name: "Zephyr", gender: "Female", tone: "Bright", description: "Bright & airy voice" },
+  Zubenelgenubi: { name: "Zubenelgenubi", gender: "Male", tone: "Casual", description: "Casual & conversational voice" },
+};
+
+export const PREVIEW_VOICES_MAP: Record<string, string> = Object.fromEntries(
+  Object.keys(GEMINI_STUDIO_VOICES).map((k) => [k, k]),
+);
+
 export function robinSampleUrl(voiceId: string): string | null {
   const slug = voiceId.toLowerCase();
   return CHIRP_SAMPLES.has(slug) ? `https://docs.cloud.google.com/static/text-to-speech/docs/audio/chirp3-hd-${slug}.wav` : null;
 }
 
-/** Robin TTS voices mapped to the studio Voice shape (voice_id = Robin name). */
+/** Gemini Studio TTS voices mapped to the studio Voice shape. */
 export async function robinVoices(signal?: AbortSignal): Promise<Voice[]> {
-  const { voices } = await ttsToken(signal);
-  return Object.entries(voices)
+  void signal;
+  return Object.entries(GEMINI_STUDIO_VOICES)
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([id, v]) => ({
       voice_id: id,
@@ -153,17 +438,16 @@ function partsText(parts: GenPart[] | undefined): string {
 
 async function chat(prompt: string, _model = "flash", signal?: AbortSignal, maxTokens = 4000, tools?: { googleSearch: Record<string, unknown> }[], temperature = 0.7): Promise<ChatResponse> {
   void _model;
-  const r = await fetch(`${routerBase()}/v1beta/models/gemini-3.8-flash:generateContent`, {
-    method: "POST",
-    signal,
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
+  const r = await geminiFetch(
+    "/v1beta/models/gemini-3.8-flash:generateContent",
+    {
       contents: [{ role: "user", parts: [{ text: prompt }] }],
       generationConfig: { temperature, maxOutputTokens: maxTokens, topP: 0.95, topK: 40 },
       safetySettings: SAFETY_OFF,
       ...(tools?.length ? { tools } : {}),
-    }),
-  });
+    },
+    signal,
+  );
   if (!r.ok) throw new RobinError(await errorMessage(r, `story service answered ${r.status}`), r.status);
   const d = (await r.json()) as {
     candidates?: { finishReason?: string; content?: { parts?: GenPart[] } }[];
@@ -679,25 +963,60 @@ export async function generateSceneImage(
   const effectiveSize = size === "512px" && refItems.length ? ("1K" as ImageSize) : size;
   const payload = {
     model: "gemini-3.1-flash-image",
-    input: [...refItems, { type: "text", text: prompt }],
-    aspect_ratio: aspect,
-    image_size: effectiveSize,
-    thinking_level: "minimal",
-    response_format: { type: "image", aspect_ratio: aspect, image_size: effectiveSize },
+    input: refItems.length ? [...refItems, { type: "text", text: prompt }] : prompt,
+    response_format: {
+      type: "image",
+      mime_type: "image/jpeg",
+      aspect_ratio: aspect,
+      image_size: effectiveSize,
+    },
+    generation_config: {
+      thinking_level: "minimal",
+    },
   };
   let lastError = "";
   for (let attempt = 0; attempt < 3; attempt++) {
     if (attempt > 0) await sleep(2000 * attempt);
-    const r = await fetch(`${routerBase()}/v1/images/generations`, {
-      method: "POST",
-      signal: opts?.signal,
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(payload),
-    });
+    const r = await geminiFetch("/v1beta/interactions", payload, opts?.signal);
     if (r.ok) {
-      const d = (await r.json()) as { data?: { b64_json?: string }[]; error?: string };
-      const b64 = d.data?.[0]?.b64_json;
-      if (!b64) throw new RobinError(d.error || "image service came back empty");
+      const d = (await r.json()) as {
+        output_image?: { data?: string };
+        steps?: { type?: string; content?: { type?: string; data?: string }[] }[];
+        error?: { message?: string } | string;
+      };
+      let b64 = d.output_image?.data || "";
+      if (!b64 && Array.isArray(d.steps)) {
+        for (const step of d.steps) {
+          if (step.type === "model_output" && Array.isArray(step.content)) {
+            for (const blk of step.content) {
+              if (blk.type === "image" && blk.data) {
+                b64 = blk.data;
+                break;
+              }
+            }
+          }
+          if (b64) break;
+        }
+      }
+      if (!b64) {
+        // Fallback to native :generateContent if interactions returns no image block
+        const fb = await geminiFetch(
+          "/v1beta/models/gemini-3.1-flash-image:generateContent",
+          {
+            contents: [{ parts: [{ text: prompt }] }],
+            generationConfig: { responseModalities: ["IMAGE"], imageConfig: { aspectRatio: aspect } },
+          },
+          opts?.signal,
+        );
+        if (fb.ok) {
+          const fd = (await fb.json()) as { candidates?: { content?: { parts?: GenPart[] } }[] };
+          b64 = fd.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data || "";
+        }
+      }
+      if (!b64) {
+        const errStr = typeof d.error === "string" ? d.error : d.error?.message;
+        throw new RobinError(errStr || "image service came back empty");
+      }
       const mime = b64.startsWith("/9j/") ? "image/jpeg" : b64.startsWith("iVBOR") ? "image/png" : "image/jpeg";
       const url = `data:${mime};base64,${b64}`;
       return { url, dataUrl: url, resolution: effectiveSize, largeUrl: url, refAttached: refItems.length > 0 };
@@ -723,41 +1042,76 @@ export async function generateSceneVideo(
 ): Promise<SceneVideo> {
   const resolution = (VIDEO_RESOLUTIONS as readonly string[]).includes(opts?.resolution ?? "") ? (opts?.resolution as string) : "360p";
   const seconds = (VIDEO_DURATIONS as readonly number[]).includes(opts?.duration ?? 0) ? (opts?.duration as number) : 3;
-  const input: { type: string; mime_type?: string; data?: string; text?: string }[] = [];
+  let interactionsInput: unknown = prompt;
   if (ref) {
     const url = await blobToDataUrl(ref);
     const comma = url.indexOf(",");
-    input.push({
-      type: "image",
-      mime_type: url.slice(url.indexOf(":") + 1, url.indexOf(";")) || ref.type || "image/png",
-      data: url.slice(comma + 1),
-    });
+    const finalPrompt =
+      !prompt.includes("<IMAGE_REF_") && !prompt.includes("<FIRST_FRAME>")
+        ? `${prompt} [# References <IMAGE_REF_0>@Image1]`
+        : prompt;
+    interactionsInput = [
+      {
+        type: "image",
+        mime_type: url.slice(url.indexOf(":") + 1, url.indexOf(";")) || ref.type || "image/png",
+        data: url.slice(comma + 1),
+      },
+      { type: "text", text: finalPrompt },
+    ];
   }
-  input.push({ type: "text", text: prompt });
   const payload = {
-    prompt,
     model: "gemini-omni-1.1-flash",
-    aspect_ratio: aspect,
-    resolution,
-    task: ref ? "image_to_video" : "text_to_video",
-    duration: `${seconds}s`,
-    duration_seconds: seconds,
-    fps: 24,
-    input,
+    input: interactionsInput,
+    response_format: {
+      type: "video",
+      aspect_ratio: aspect,
+      resolution,
+      duration: `${seconds}s`,
+    },
+    generation_config: {
+      video_config: {
+        task: ref ? "image_to_video" : "text_to_video",
+      },
+    },
   };
   let lastError = "";
   for (let attempt = 0; attempt < 3; attempt++) {
     if (attempt > 0) await sleep(2000 * attempt);
-    const r = await fetch(`${routerBase()}/v1/videos/generations`, {
-      method: "POST",
-      signal: opts?.signal,
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(payload),
-    });
+    const r = await geminiFetch("/v1beta/interactions", payload, opts?.signal);
     if (r.ok) {
-      const d = (await r.json()) as { data?: { b64_json?: string }[]; error?: string };
-      const b64 = d.data?.[0]?.b64_json;
-      if (!b64) throw new RobinError(d.error || "video service came back empty");
+      const d = (await r.json()) as {
+        output_video?: { data?: string; uri?: string };
+        steps?: { type?: string; content?: { type?: string; data?: string; uri?: string }[] }[];
+        error?: { message?: string } | string;
+      };
+      let b64 = d.output_video?.data || "";
+      let videoUri = d.output_video?.uri || "";
+      if (!b64 && !videoUri && Array.isArray(d.steps)) {
+        for (const step of d.steps) {
+          if (step.type === "model_output" && Array.isArray(step.content)) {
+            for (const blk of step.content) {
+              if (blk.type === "video") {
+                if (blk.data) b64 = blk.data;
+                if (blk.uri) videoUri = blk.uri;
+                break;
+              }
+            }
+          }
+          if (b64 || videoUri) break;
+        }
+      }
+      if (!b64 && videoUri) {
+        const vr = await fetch(videoUri, { signal: opts?.signal });
+        if (vr.ok) {
+          const vblob = await vr.blob();
+          const dataUrl = await blobToDataUrl(vblob);
+          return { url: dataUrl, dataUrl };
+        }
+      }
+      if (!b64) {
+        const errStr = typeof d.error === "string" ? d.error : d.error?.message;
+        throw new RobinError(errStr || "video service came back empty");
+      }
       const url = `data:video/mp4;base64,${b64}`;
       return { url, dataUrl: url };
     }
@@ -769,18 +1123,15 @@ export async function generateSceneVideo(
 
 // --------------------------------------------------------------------- TTS
 
-export type RobinVoice = { name: string; gender: string; tone: string; description: string };
 type TokenCache = { token: string; model: string; voices: Record<string, RobinVoice>; at: number };
-let tokenCache: TokenCache | null = null;
+let tokenOnlyCache: TokenCache | null = null;
 
 export async function ttsToken(signal?: AbortSignal): Promise<TokenCache> {
-  if (tokenCache && Date.now() - tokenCache.at < 45 * 60 * 1000) return tokenCache;
-  const r = await fetch(`${robinBase()}/api/tts/token`, { signal });
-  if (!r.ok) throw new RobinError(`voice service answered ${r.status}`, r.status);
-  const d = (await r.json()) as { token: string; model: string; voices: Record<string, RobinVoice> };
-  if (!d.token) throw new RobinError("voice service gave no token");
-  tokenCache = { token: d.token, model: d.model || "gemini-3.1-flash-tts-preview", voices: d.voices ?? {}, at: Date.now() };
-  return tokenCache;
+  if (tokenOnlyCache && Date.now() - tokenOnlyCache.at < 45 * 60 * 1000) return tokenOnlyCache;
+  const auth = await getDirectAuth(signal);
+  const bearer = (auth.headers.Authorization || "").replace(/^Bearer\s+/i, "");
+  tokenOnlyCache = { token: bearer, model: "gemini-3.8-flash-tts", voices: GEMINI_STUDIO_VOICES, at: Date.now() };
+  return tokenOnlyCache;
 }
 
 function base64ToBytes(b64: string): Uint8Array {
@@ -879,44 +1230,177 @@ export function applyPauseTags(text: string): string {
 
 export const TTS_MODELS = ["gemini-3.8-flash-tts", "gemini-3.8-flash-lite-tts"] as const;
 
-export async function synthesizeNarration(text: string, voiceName: string, opts?: { style?: string; signal?: AbortSignal; model?: string }): Promise<SceneAudio> {
+function pcmToWav(pcmData: Uint8Array, sampleRate = 24000, channels = 1, bitsPerSample = 16): Uint8Array {
+  const header = new ArrayBuffer(44);
+  const view = new DataView(header);
+  const byteRate = (sampleRate * channels * bitsPerSample) / 8;
+  const blockAlign = (channels * bitsPerSample) / 8;
+  const dataSize = pcmData.length;
+
+  view.setUint32(0, 0x52494646, false); // "RIFF"
+  view.setUint32(4, 36 + dataSize, true);
+  view.setUint32(8, 0x57415645, false); // "WAVE"
+  view.setUint32(12, 0x666d7420, false); // "fmt "
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, channels, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, byteRate, true);
+  view.setUint16(32, blockAlign, true);
+  view.setUint16(34, bitsPerSample, true);
+  view.setUint32(36, 0x64617461, false); // "data"
+  view.setUint32(40, dataSize, true);
+
+  const wav = new Uint8Array(44 + dataSize);
+  wav.set(new Uint8Array(header), 0);
+  wav.set(pcmData, 44);
+  return wav;
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    const chunk = bytes.subarray(i, i + chunkSize);
+    binary += String.fromCharCode.apply(null, chunk as unknown as number[]);
+  }
+  return btoa(binary);
+}
+
+function parseOffsetSeconds(offsetStr?: string): number {
+  if (!offsetStr) return 0;
+  const num = parseFloat(String(offsetStr).replace("s", ""));
+  return Number.isNaN(num) ? 0 : Math.round(num * 1000) / 1000;
+}
+
+async function transcribeDirect(audioBase64: string, mimeType = "audio/wav", signal?: AbortSignal): Promise<CaptionWord[]> {
+  try {
+    const r = await geminiFetch(
+      "/v1beta/interactions",
+      {
+        model: "gemini-3.5-transcribe",
+        input: [{ type: "audio", mime_type: mimeType, data: audioBase64 }],
+        generation_config: {
+          transcription_config: {
+            mode: {
+              type: "verbatim",
+              timestamp_granularities: ["word"],
+            },
+          },
+        },
+      },
+      signal,
+    );
+    if (!r.ok) return [];
+    const rawData = (await r.json()) as {
+      steps?: {
+        content?: {
+          text?: string;
+          annotations?: { type?: string; text?: string; start_offset?: string; end_offset?: string }[];
+        }[];
+      }[];
+    };
+    const words: CaptionWord[] = [];
+    for (const step of rawData.steps ?? []) {
+      for (const cnt of step.content ?? []) {
+        for (const ann of cnt.annotations ?? []) {
+          if ((ann.type === "word_info" || ann.text) && typeof ann.text === "string" && ann.text.trim()) {
+            words.push({
+              text: ann.text.trim(),
+              start: parseOffsetSeconds(ann.start_offset),
+              end: parseOffsetSeconds(ann.end_offset),
+            });
+          }
+        }
+      }
+    }
+    return words;
+  } catch {
+    return [];
+  }
+}
+
+export async function synthesizeNarration(
+  text: string,
+  voiceName: string,
+  opts?: { style?: string; signal?: AbortSignal; model?: string; withCaptions?: boolean },
+): Promise<SceneAudio> {
   const signal = opts?.signal;
   const clean = applyPauseTags(text).replace(/\s+/g, " ").trim().slice(0, 900);
   if (!clean) throw new RobinError("empty narration");
-  // Tone rides as a separate `style` field — never merged into the spoken
-  // text (anything in `input` gets narrated aloud). Markup tags stay inline:
-  // the transcriber times them and drops them from the spoken text.
   const style = opts?.style?.trim();
   const model = (TTS_MODELS as readonly string[]).includes(opts?.model ?? "") ? (opts?.model as string) : TTS_MODELS[0];
-  const r = await fetch(`${routerBase()}/v1/audio/speech-with-captions`, {
-    method: "POST",
-    signal,
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      model,
-      input: clean,
-      voice: voiceName,
-      response_format: "wav",
-      with_captions: true,
-      ...(style ? { style } : {}),
-    }),
-  });
-  if (!r.ok) throw new RobinError(await errorMessage(r, `narration service answered ${r.status}`), r.status);
-  const d = (await r.json()) as {
-    audio?: string;
-    audio_data_url?: string;
-    captions?: { words?: { text?: string; start?: number; end?: number }[] };
+  const canonicalVoice = voiceName ? voiceName.charAt(0).toUpperCase() + voiceName.slice(1).toLowerCase() : "Kore";
+
+  const annotations = style ? [{ type: "speech_metadata", style }] : undefined;
+  const interactionsPayload = {
+    model,
+    input: [
+      {
+        type: "user_input",
+        content: [
+          {
+            type: "text",
+            text: clean,
+            ...(annotations ? { annotations } : {}),
+          },
+        ],
+      },
+    ],
+    response_format: { type: "audio" },
+    generation_config: {
+      speech_config: [{ voice: canonicalVoice }],
+    },
   };
-  const b64 = d.audio_data_url && d.audio_data_url.includes(",")
-    ? d.audio_data_url.split(",")[1]
-    : typeof d.audio === "string" && d.audio
-      ? d.audio
-      : "";
+
+  let b64 = "";
+  const r = await geminiFetch("/v1beta/interactions", interactionsPayload, signal);
+  if (r.ok) {
+    const d = (await r.json()) as {
+      steps?: { type?: string; content?: { type?: string; data?: string }[] }[];
+    };
+    for (const step of d.steps ?? []) {
+      if (step.type === "model_output") {
+        for (const blk of step.content ?? []) {
+          if (blk.type === "audio" && blk.data) {
+            b64 = blk.data;
+            break;
+          }
+        }
+      }
+      if (b64) break;
+    }
+  } else {
+    // Fallback to :generateContent if interactions endpoint rejects the TTS model
+    const fb = await geminiFetch(
+      `/v1beta/models/${model}:generateContent`,
+      {
+        contents: [{ parts: [{ text: clean }] }],
+        generationConfig: {
+          responseModalities: ["AUDIO"],
+          speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: canonicalVoice } } },
+        },
+      },
+      signal,
+    );
+    if (!fb.ok) throw new RobinError(await errorMessage(r, `narration service answered ${r.status}`), r.status);
+    const fd = (await fb.json()) as { candidates?: { content?: { parts?: GenPart[] } }[] };
+    const rawPcmB64 = fd.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data || "";
+    if (rawPcmB64) {
+      const wavBytes = pcmToWav(base64ToBytes(rawPcmB64), 24000);
+      b64 = bytesToBase64(wavBytes);
+    }
+  }
+
   if (!b64) throw new RobinError("narration came back empty");
-  const bytes = base64ToBytes(b64);
-  const captions: CaptionWord[] = ((d.captions?.words ?? []) as { text?: string; start?: number; end?: number }[])
-    .filter((w) => typeof w?.text === "string" && w.text.trim())
-    .map((w) => ({ text: String(w.text).trim(), start: Number(w.start) || 0, end: Number(w.end) || 0 }));
+  let bytes = base64ToBytes(b64);
+  // Ensure RIFF WAV header if raw PCM came back
+  if (bytes.length > 4 && !(bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46)) {
+    bytes = pcmToWav(bytes, 24000);
+    b64 = bytesToBase64(bytes);
+  }
+
+  const captions = opts?.withCaptions === false ? [] : await transcribeDirect(b64, "audio/wav", signal);
   return { dataUrl: `data:audio/wav;base64,${b64}`, seconds: wavSeconds(bytes), captions };
 }
 
@@ -994,7 +1478,7 @@ export async function auditionRobinVoice(voiceId: string, text: string): Promise
   const key = `${voiceId}|${text}`;
   const hit = auditionCache.get(key);
   if (hit) return hit;
-  const r = await synthesizeNarration(text, voiceId);
+  const r = await synthesizeNarration(text, voiceId, { withCaptions: false });
   auditionCache.set(key, r.dataUrl);
   return r.dataUrl;
 }

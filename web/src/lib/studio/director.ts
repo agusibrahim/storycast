@@ -1,7 +1,7 @@
-import { run } from "./fal";
+import { geminiFetch } from "@/lib/story/robin";
 import { studioData, type StyleFull } from "./data";
 
-export const DIRECTOR_MODEL = "anthropic/claude-opus-5.5";
+export const DIRECTOR_MODEL = "gemini-3.8-flash";
 
 export type Given = { name: string; traits: string; pronoun: string; personality?: string };
 export type GivenVoice = { voice_id: string; name?: string; gender?: string; age?: string; accent?: string; description?: string; descriptive?: string };
@@ -116,15 +116,15 @@ function parse(text: string): any {
 async function ask(system: string, prompt: string, maxTokens = 16000): Promise<any> {
   let last: unknown;
   for (let i = 0; i < 2; i++) {
-    const r = await run<{ output?: string }>("openrouter/router", {
-      model: DIRECTOR_MODEL,
-      system_prompt: system,
-      prompt,
-      max_tokens: maxTokens,
-      reasoning: true,
+    const r = await geminiFetch("/v1beta/models/gemini-3.8-flash:generateContent", {
+      systemInstruction: { parts: [{ text: system }] },
+      contents: [{ role: "user", parts: [{ text: prompt }] }],
+      generationConfig: { maxOutputTokens: maxTokens, temperature: 0.7 },
     });
+    const d = (await r.json().catch(() => ({}))) as { candidates?: { content?: { parts?: { text?: string }[] } }[] };
+    const out = (d.candidates?.[0]?.content?.parts ?? []).map((p) => p.text ?? "").join("");
     try {
-      return parse(r.output || "");
+      return parse(out);
     } catch (e) {
       last = e;
       prompt += "\n\nYour previous answer was not valid JSON. Return ONLY the JSON object.";
@@ -238,19 +238,42 @@ export async function rephraseScene(scene: string): Promise<string> {
   return (await ask(REPHRASE_SYSTEM, rephrasePrompt(scene), 2000)).scene;
 }
 
+async function urlToInlinePart(url: string): Promise<{ inlineData: { mimeType: string; data: string } } | null> {
+  try {
+    if (url.startsWith("data:")) {
+      const comma = url.indexOf(",");
+      const mime = url.slice(url.indexOf(":") + 1, url.indexOf(";")) || "image/jpeg";
+      return { inlineData: { mimeType: mime, data: url.slice(comma + 1) } };
+    }
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    const blob = await res.blob();
+    const dataUrl = await new Promise<string>((resolve, reject) => {
+      const fr = new FileReader();
+      fr.onload = () => resolve(String(fr.result));
+      fr.onerror = () => reject(fr.error);
+      fr.readAsDataURL(blob);
+    });
+    const comma = dataUrl.indexOf(",");
+    return { inlineData: { mimeType: blob.type || "image/jpeg", data: dataUrl.slice(comma + 1) } };
+  } catch {
+    return null;
+  }
+}
+
 async function see(system: string, prompt: string, imageUrls: string[]): Promise<any> {
+  const imgParts = (await Promise.all(imageUrls.map(urlToInlinePart))).filter(Boolean);
   let last: unknown;
   for (let i = 0; i < 2; i++) {
-    const r = await run<{ output?: string }>("openrouter/router/vision", {
-      model: DIRECTOR_MODEL,
-      system_prompt: system,
-      prompt,
-      image_urls: imageUrls,
-      max_tokens: 6000,
-      reasoning: true,
+    const r = await geminiFetch("/v1beta/models/gemini-3.8-flash:generateContent", {
+      systemInstruction: { parts: [{ text: system }] },
+      contents: [{ role: "user", parts: [...imgParts, { text: prompt }] }],
+      generationConfig: { maxOutputTokens: 6000, temperature: 0.4 },
     });
+    const d = (await r.json().catch(() => ({}))) as { candidates?: { content?: { parts?: { text?: string }[] } }[] };
+    const out = (d.candidates?.[0]?.content?.parts ?? []).map((p) => p.text ?? "").join("");
     try {
-      return parse(r.output || "");
+      return parse(out);
     } catch (e) {
       last = e;
       prompt += "\n\nReturn ONLY the JSON object.";

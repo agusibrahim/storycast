@@ -1,5 +1,4 @@
 import { studioData, seedFilms } from "@/lib/studio/data";
-import { upload } from "@/lib/studio/fal";
 import { newRecord, runFilm } from "@/lib/studio/pipeline";
 import { allRecords, loadRecord, saveRecord, type FilmRecord } from "@/lib/studio/store";
 import * as voices from "@/lib/studio/voices";
@@ -254,7 +253,12 @@ export const api = {
     const ext = (file.name.split(".").pop() || "").toLowerCase();
     if (!["png", "jpg", "jpeg", "webp"].includes(ext)) return Promise.reject(new Error("png / jpg / webp only"));
     if (file.size > 20 * 1024 * 1024) return Promise.reject(new Error("image is larger than 20 MB"));
-    return upload(file);
+    return new Promise<string>((resolve, reject) => {
+      const fr = new FileReader();
+      fr.onload = () => resolve(String(fr.result));
+      fr.onerror = () => reject(fr.error ?? new Error("upload failed"));
+      fr.readAsDataURL(file);
+    });
   },
 };
 

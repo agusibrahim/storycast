@@ -7,6 +7,18 @@ export interface Env {
   IP_SALT: string;
   TURNSTILE_SECRET?: string;
   FAL_KEY?: string;
+  GEMINI_ACCOUNTS_KV?: KVNamespace;
+  GOOGLE_AAS_ACCOUNTS?: string;
+  GOOGLE_AAS_ACCOUNT_1?: string;
+  GOOGLE_AAS_ACCOUNT_2?: string;
+  GOOGLE_AAS_ACCOUNT_3?: string;
+  GOOGLE_AAS_ACCOUNT_4?: string;
+  GOOGLE_AAS_ACCOUNT_5?: string;
+  GOOGLE_AAS_ACCOUNT_6?: string;
+  GOOGLE_AAS_ACCOUNT_7?: string;
+  GOOGLE_AAS_ACCOUNT_8?: string;
+  GOOGLE_AAS_ACCOUNT_9?: string;
+  GOOGLE_AAS_ACCOUNT_10?: string;
   VOICE_LIMIT?: { limit(o: { key: string }): Promise<{ success: boolean }> };
 }
 
@@ -245,6 +257,113 @@ const QUESTIONS = {
   },
 };
 
+const shareTokenCache = new Map<string, { token: string; exp: number }>();
+const shareCooldown = new Map<string, number>();
+let shareAccIdx = 0;
+
+async function loadEnvAccounts(env: Env): Promise<{ id: string; authData: string }[]> {
+  const list: { id: string; authData: string }[] = [];
+  const envAny = env as unknown as Record<string, unknown>;
+  for (let i = 1; i <= 10; i++) {
+    const val = envAny[`GOOGLE_AAS_ACCOUNT_${i}`];
+    if (typeof val === "string" && val.trim()) {
+      list.push({ id: `env_acc_${i}`, authData: val.trim() });
+    }
+  }
+  if (typeof env.GOOGLE_AAS_ACCOUNTS === "string" && env.GOOGLE_AAS_ACCOUNTS.trim()) {
+    const parts = env.GOOGLE_AAS_ACCOUNTS.split(/[\n,;]+/).map((s) => s.trim()).filter(Boolean);
+    parts.forEach((raw, idx) => list.push({ id: `env_list_${idx + 1}`, authData: raw }));
+  }
+  if (env.GEMINI_ACCOUNTS_KV) {
+    try {
+      const raw = await env.GEMINI_ACCOUNTS_KV.get("custom_accounts");
+      if (raw) {
+        const parsed = JSON.parse(raw) as { id?: string; authData?: string; active?: boolean; deleted?: boolean }[];
+        if (Array.isArray(parsed)) {
+          for (const item of parsed) {
+            if (item && item.authData && item.active !== false && !item.deleted) {
+              list.push({ id: item.id || `kv_${list.length + 1}`, authData: item.authData });
+            }
+          }
+        }
+      }
+    } catch {}
+  }
+  return list;
+}
+
+async function getShareGeminiToken(env: Env): Promise<{ token: string; accountId: string; expiresIn: number }> {
+  const accounts = await loadEnvAccounts(env);
+  if (!accounts.length) throw new HttpError(503, "No GOOGLE_AAS_ACCOUNT configured in Worker environment");
+  const nowMs = Date.now();
+  const ready = accounts.filter((a) => (shareCooldown.get(a.id) ?? 0) <= nowMs);
+  const pool = ready.length ? ready : accounts;
+
+  for (let i = 0; i < pool.length; i++) {
+    const acc = pool[shareAccIdx % pool.length];
+    shareAccIdx = (shareAccIdx + 1) % pool.length;
+
+    const cached = shareTokenCache.get(acc.id);
+    if (cached && cached.exp > nowMs + 60_000) {
+      return { token: cached.token, accountId: acc.id, expiresIn: Math.round((cached.exp - nowMs) / 1000) };
+    }
+
+    const raw = acc.authData.startsWith("aas_et/")
+      ? `androidId=3c4096cfd46caf54&Email=user%40gmail.com&Token=${encodeURIComponent(acc.authData)}`
+      : acc.authData;
+    const p = new URLSearchParams(raw);
+    let master = p.get("Token") || "";
+    if (master.includes("%")) {
+      try {
+        master = decodeURIComponent(master);
+      } catch {}
+    }
+    const body = new URLSearchParams({
+      androidId: p.get("androidId") || "3c4096cfd46caf54",
+      app: "com.google.android.googlequicksearchbox",
+      client_sig: "38918a453d07199354f8b19af05ec6562ced5788",
+      callerPkg: "com.google.android.googlequicksearchbox",
+      callerSig: "38918a453d07199354f8b19af05ec6562ced5788",
+      device_country: "id",
+      Email: p.get("Email") || "",
+      google_play_services_version: "263332035",
+      lang: "en_US",
+      sdk_version: "35",
+      service: "oauth2:https://www.googleapis.com/auth/generative-language",
+      source: "android",
+      Token: master,
+    });
+    const res = await fetch("https://android.googleapis.com/auth", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded", "User-Agent": "GoogleAuth/1.4" },
+      body: body.toString(),
+    });
+    if (!res.ok) {
+      shareCooldown.set(acc.id, nowMs + 120_000);
+      continue;
+    }
+    const t = await res.text();
+    for (const line of t.split("\n")) {
+      if (line.startsWith("Auth=")) {
+        const token = line.slice(5).trim();
+        const exp = nowMs + 45 * 60_000;
+        shareTokenCache.set(acc.id, { token, exp });
+        return { token, accountId: acc.id, expiresIn: 2700 };
+      }
+    }
+  }
+  throw new HttpError(502, "Failed to exchange Google AAS token from Worker environment");
+}
+
+function bufToB64(buf: ArrayBuffer): string {
+  const bytes = new Uint8Array(buf);
+  let bin = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000) as unknown as number[]);
+  }
+  return btoa(bin);
+}
+
 type Verdict = { allowed: number | null; category: string; seen: string };
 
 async function moderate(env: Env, video: string, images: string[], text: Record<string, unknown>): Promise<Verdict> {
@@ -259,21 +378,63 @@ async function moderate(env: Env, video: string, images: string[], text: Record<
     );
     const got = frames.filter((u): u is string => !!u);
     if (!got.length) return { allowed: null, category: "unreadable", seen: "" };
-    const vision = await falRun<{ output: string }>(env, "openrouter/router/vision", {
-      model: "google/gemini-3.8-flash",
-      reasoning: true,
-      temperature: 0,
-      max_tokens: 1500,
-      system_prompt: DESCRIBE,
-      prompt: "The first images are frames from one short video, the rest are illustrations shown with it. Describe them in at most 120 words.",
-      image_urls: [...got, ...images.slice(0, 3)],
+    const { token } = await getShareGeminiToken(env);
+    const imgParts = (
+      await Promise.all(
+        [...got, ...images.slice(0, 3)].map(async (u) => {
+          try {
+            const r = await fetch(u);
+            if (!r.ok) return null;
+            const b = await r.arrayBuffer();
+            const mime = (r.headers.get("content-type") || "image/jpeg").split(";")[0].trim();
+            return { inlineData: { mimeType: mime, data: bufToB64(b) } };
+          } catch {
+            return null;
+          }
+        }),
+      )
+    ).filter(Boolean);
+
+    const vr = await fetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: DESCRIBE }] },
+        contents: [
+          {
+            role: "user",
+            parts: [
+              ...imgParts,
+              { text: "The first images are frames from one short video, the rest are illustrations shown with it. Describe them in at most 120 words." },
+            ],
+          },
+        ],
+        generationConfig: { temperature: 0, maxOutputTokens: 1500 },
+      }),
     });
-    const seen = String(vision.output ?? "").slice(0, 2000);
-    const d = await falRun<{ answers: { allowed?: { noul: number }; category?: { choice: string } } }>(env, "openrouter/router/decisions", {
-      state: JSON.stringify({ ...text, what_the_video_shows: seen }),
-      questions: QUESTIONS,
+    const vd = (await vr.json().catch(() => ({}))) as { candidates?: { content?: { parts?: { text?: string }[] } }[] };
+    const seen = (vd.candidates?.[0]?.content?.parts ?? []).map((p) => p.text ?? "").join("").slice(0, 2000);
+
+    const dr = await fetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({
+        contents: [
+          {
+            role: "user",
+            parts: [
+              {
+                text: `Evaluate this shared story based on the criteria: ${JSON.stringify(QUESTIONS)}\nState: ${JSON.stringify({ ...text, what_the_video_shows: seen })}\nReturn ONLY JSON: {"allowed": 0.0 to 1.0, "category": "none|sexual|hate|violence|illegal|spam|personal|mismatch|other"}`,
+              },
+            ],
+          },
+        ],
+        generationConfig: { temperature: 0, maxOutputTokens: 256, responseMimeType: "application/json" },
+      }),
     });
-    return { allowed: d.answers.allowed?.noul ?? null, category: d.answers.category?.choice ?? "none", seen };
+    const dd = (await dr.json().catch(() => ({}))) as { candidates?: { content?: { parts?: { text?: string }[] } }[] };
+    const rawJson = JSON.parse((dd.candidates?.[0]?.content?.parts?.[0]?.text ?? "{}").trim()) as { allowed?: number; category?: string };
+    return { allowed: typeof rawJson.allowed === "number" ? rawJson.allowed : null, category: rawJson.category ?? "none", seen };
   } catch {
     return { allowed: null, category: "unchecked", seen: "" };
   }
@@ -1254,6 +1415,18 @@ async function route(req: Request, env: Env, ctx: ExecutionContext): Promise<Res
   if ((m === "GET" || m === "HEAD") && (path.startsWith("/s/stories/") || path.startsWith("/s/characters/") || path.startsWith("/s/styles/")))
     return serveStoryMedia(req, env, decodeURIComponent(path.slice(3)));
 
+  if (path === "/api/gemini-token" && (m === "GET" || m === "POST")) {
+    if (!Object.keys(cors(req, env)).length) throw new HttpError(403, "not allowed");
+    if (m === "POST") {
+      const body = (await req.json().catch(() => ({}))) as { brokenAccountId?: string };
+      if (typeof body.brokenAccountId === "string" && body.brokenAccountId) {
+        shareTokenCache.delete(body.brokenAccountId);
+        shareCooldown.set(body.brokenAccountId, Date.now() + 60_000);
+      }
+    }
+    const res = await getShareGeminiToken(env);
+    return json(res, req, env);
+  }
   if (path === "/api/stories" && m === "POST") return createStory(req, env);
   if (path === "/api/characters" && m === "POST") return createCharacter(req, env);
   if (path === "/api/characters" && m === "GET") {

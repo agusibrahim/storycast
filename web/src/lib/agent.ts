@@ -186,10 +186,9 @@ export async function agentBrief(ctx: AgentContext | null): Promise<string> {
 
   add("", "## How to call the director", "");
   add(
-    `Every text step uses \`openrouter/router\` with \`{model: "${D.DIRECTOR_MODEL}", system_prompt, prompt, max_tokens, reasoning: true}\`; image steps use`,
-    `\`openrouter/router/vision\` with the same fields plus \`image_urls\` and \`max_tokens: 6000\`. Read \`output\`, strip any markdown fence and parse the JSON`,
-    'between the first "{" and the last "}". If it does not parse, ask once more with "\\n\\nYour previous answer was not valid JSON. Return ONLY the JSON object."',
-    'appended to the prompt (for vision: "\\n\\nReturn ONLY the JSON object.").',
+    `Every text and vision step hits Google Gemini directly at \`https://generativelanguage.googleapis.com/v1beta/models/${D.DIRECTOR_MODEL}:generateContent\`.`,
+    'Strip any markdown fence and parse the JSON between the first "{" and the last "}". If it does not parse, ask once more with',
+    '"\\n\\nYour previous answer was not valid JSON. Return ONLY the JSON object." appended to the prompt.',
   );
 
   if (r.customLook || r.uploaded) {

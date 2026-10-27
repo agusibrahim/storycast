@@ -1,3 +1,4 @@
+import { geminiFetch } from "@/lib/story/robin";
 import type { JobEvent, Plan as EventPlan } from "@/lib/api";
 import { studioData, type CastFull, type StyleFull } from "./data";
 import * as director from "./director";
@@ -20,8 +21,8 @@ export const LOUDNORM = "fal-ai/ffmpeg-api/loudnorm";
 export const MERGE_AV = "fal-ai/ffmpeg-api/merge-audio-video";
 export const SUBTITLE = "fal-ai/workflow-utilities/auto-subtitle";
 export const FRAME_AT = "fal-ai/ffmpeg-api/extract-frame";
-export const VISION = "openrouter/router/vision";
-export const CHECKER = "google/gemini-3.8-flash";
+export const VISION = "gemini-3.8-flash";
+export const CHECKER = "gemini-3.8-flash";
 
 export type Resolution = "480P" | "768P";
 export const RESOLUTIONS: Resolution[] = ["768P", "480P"];
@@ -501,16 +502,32 @@ export class Film {
       )
     ).filter((u): u is string => !!u);
     if (!frames.length) return false;
-    const r = await run<{ output: string }>(VISION, {
-      model: CHECKER,
-      reasoning: true,
-      temperature: 0,
-      max_tokens: 1500,
-      system_prompt: SHEET_CHECK_SYSTEM,
-      prompt: SHEET_CHECK_PROMPT,
-      image_urls: [this.st.sheet_url, ...frames],
+    const toPart = async (u: string) => {
+      try {
+        const res = await fetch(u);
+        if (!res.ok) return null;
+        const blob = await res.blob();
+        const dataUrl = await new Promise<string>((resolve, reject) => {
+          const fr = new FileReader();
+          fr.onload = () => resolve(String(fr.result));
+          fr.onerror = () => reject(fr.error);
+          fr.readAsDataURL(blob);
+        });
+        const comma = dataUrl.indexOf(",");
+        return { inlineData: { mimeType: blob.type || "image/jpeg", data: dataUrl.slice(comma + 1) } };
+      } catch {
+        return null;
+      }
+    };
+    const imgParts = (await Promise.all([this.st.sheet_url, ...frames].map(toPart))).filter(Boolean);
+    if (!imgParts.length) return false;
+    const r = await geminiFetch("/v1beta/models/gemini-3.8-flash:generateContent", {
+      systemInstruction: { parts: [{ text: SHEET_CHECK_SYSTEM }] },
+      contents: [{ role: "user", parts: [...imgParts, { text: SHEET_CHECK_PROMPT }] }],
+      generationConfig: { temperature: 0, maxOutputTokens: 1500 },
     });
-    const text = r.output ?? "";
+    const d = (await r.json().catch(() => ({}))) as { candidates?: { content?: { parts?: { text?: string }[] } }[] };
+    const text = (d.candidates?.[0]?.content?.parts ?? []).map((p) => p.text ?? "").join("");
     return /"sheet"\s*:\s*true/i.test(text);
   }
 

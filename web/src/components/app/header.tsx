@@ -7,7 +7,7 @@ import { Input } from "@/components/motion/input";
 import { SharedLayoutBg } from "@/components/motion/shared-layout-bg";
 import { ThemeToggle } from "@/components/motion/theme-toggle";
 import { Link, usePath } from "@/lib/router";
-import { DEFAULT_ROUTER_BASE, routerBase, setRouterBase } from "@/lib/story/robin";
+import { DEFAULT_ROUTER_BASE, geminiAuthInput, routerBase, setGeminiAuthInput, setRouterBase } from "@/lib/story/robin";
 import { EASE_OUT } from "@/lib/ease";
 import { cn } from "@/lib/utils";
 
@@ -22,11 +22,13 @@ export function Header() {
   const path = usePath();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [baseUrl, setBaseUrl] = useState(routerBase());
+  const [authVal, setAuthVal] = useState(geminiAuthInput());
   const [saved, setSaved] = useState(false);
   const [urlError, setUrlError] = useState("");
 
   function openSettings() {
     setBaseUrl(routerBase());
+    setAuthVal(geminiAuthInput());
     setUrlError("");
     setSaved(false);
     setSettingsOpen(true);
@@ -39,6 +41,7 @@ export function Header() {
       return;
     }
     setRouterBase(v);
+    setGeminiAuthInput(authVal);
     setUrlError("");
     setSaved(true);
     window.setTimeout(() => setSettingsOpen(false), 600);
@@ -87,12 +90,16 @@ export function Header() {
         open={settingsOpen}
         baseUrl={baseUrl}
         onBaseUrl={setBaseUrl}
+        authVal={authVal}
+        onAuthVal={setAuthVal}
         urlError={urlError}
         saved={saved}
         onSave={saveSettings}
         onReset={() => {
           setRouterBase(DEFAULT_ROUTER_BASE);
+          setGeminiAuthInput("");
           setBaseUrl(DEFAULT_ROUTER_BASE);
+          setAuthVal("");
           setUrlError("");
           setSaved(true);
           window.setTimeout(() => setSettingsOpen(false), 600);
@@ -107,6 +114,8 @@ function SettingsModal({
   open,
   baseUrl,
   onBaseUrl,
+  authVal,
+  onAuthVal,
   urlError,
   saved,
   onSave,
@@ -116,6 +125,8 @@ function SettingsModal({
   open: boolean;
   baseUrl: string;
   onBaseUrl: (v: string) => void;
+  authVal: string;
+  onAuthVal: (v: string) => void;
   urlError: string;
   saved: boolean;
   onSave: () => void;
@@ -156,7 +167,7 @@ function SettingsModal({
             </div>
             <div className="flex flex-col gap-4 px-5 py-4">
               <div>
-                <p className="mb-1.5 text-xs font-medium text-muted-foreground">Generative content base URL</p>
+                <p className="mb-1.5 text-xs font-medium text-muted-foreground">Google Gemini API Host</p>
                 <Input
                   value={baseUrl}
                   onChange={onBaseUrl}
@@ -165,7 +176,20 @@ function SettingsModal({
                   className="w-full font-mono text-xs"
                 />
                 <p className="mt-1.5 text-[11px] text-muted-foreground">
-                  Storyboard, image, video and voice generation all go through this worker.
+                  Hits Google Gemini directly (generativelanguage.googleapis.com) with no proxy.
+                </p>
+              </div>
+              <div>
+                <p className="mb-1.5 text-xs font-medium text-muted-foreground">Custom Gemini Credential (optional)</p>
+                <Input
+                  value={authVal}
+                  onChange={onAuthVal}
+                  onKeyDown={(e) => e.key === "Enter" && onSave()}
+                  placeholder="Leave empty to use built-in AAS account pool (or AIza... / ya29... / aas_et/...)"
+                  className="w-full font-mono text-xs"
+                />
+                <p className="mt-1.5 text-[11px] text-muted-foreground">
+                  By default, Storycast rotates built-in Google AAS tokens directly in the browser.
                 </p>
                 {urlError && <p className="mt-1.5 text-xs text-destructive">{urlError}</p>}
                 {saved && <p className="mt-1.5 text-xs text-success">Saved.</p>}
