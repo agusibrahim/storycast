@@ -430,19 +430,36 @@ const SAFETY_OFF = [
   { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" },
 ];
 
-type GenPart = { text?: string; inlineData?: { mimeType?: string; data?: string } };
+type GenPart = { text?: string; thought?: boolean; inlineData?: { mimeType?: string; data?: string } };
 
 function partsText(parts: GenPart[] | undefined): string {
-  return (parts ?? []).map((p) => p.text ?? "").join("");
+  const all = parts ?? [];
+  const nonThought = all.filter((p) => !p.thought).map((p) => p.text ?? "").join("");
+  return nonThought || all.map((p) => p.text ?? "").join("");
 }
 
-async function chat(prompt: string, _model = "flash", signal?: AbortSignal, maxTokens = 4000, tools?: { googleSearch: Record<string, unknown> }[], temperature = 0.7): Promise<ChatResponse> {
+async function chat(
+  prompt: string,
+  _model = "flash",
+  signal?: AbortSignal,
+  maxTokens = 4000,
+  tools?: { googleSearch: Record<string, unknown> }[],
+  temperature = 0.7,
+  jsonMode = false,
+): Promise<ChatResponse> {
   void _model;
   const r = await geminiFetch(
     "/v1beta/models/gemini-3.8-flash:generateContent",
     {
       contents: [{ role: "user", parts: [{ text: prompt }] }],
-      generationConfig: { temperature, maxOutputTokens: maxTokens, topP: 0.95, topK: 40 },
+      generationConfig: {
+        temperature,
+        maxOutputTokens: maxTokens,
+        topP: 0.95,
+        topK: 40,
+        thinkingConfig: { thinkingBudget: 0 },
+        ...(jsonMode && !tools?.length ? { responseMimeType: "application/json" } : {}),
+      },
       safetySettings: SAFETY_OFF,
       ...(tools?.length ? { tools } : {}),
     },
@@ -749,28 +766,6 @@ function boardFromText(raw: string, topic: string, count: number): StoryboardDra
   };
 }
 
-async function researchFacts(topic: string, genre: string, signal?: AbortSignal): Promise<string> {
-  if (!FACTUAL_GENRES.has(genreKey(genre))) return "";
-  try {
-    const r = await chat(
-      `Research this topic for a short film. TOPIC: ${topic}. ` +
-        `Return ONLY JSON {"facts":["3 to 5 short accurate facts a child can check"],"uncertain":["disputed or legendary claims"]}. No prose.`,
-      "flash",
-      signal,
-      2500,
-      [{ googleSearch: {} }],
-      0.2,
-    );
-    const parsed = extractJson(String(r.text ?? "")) as { facts?: unknown; uncertain?: unknown };
-    const facts = (Array.isArray(parsed.facts) ? parsed.facts : []).map((x) => String(x).trim()).filter(Boolean).slice(0, 5);
-    const uncertain = (Array.isArray(parsed.uncertain) ? parsed.uncertain : []).map((x) => String(x).trim()).filter(Boolean).slice(0, 3);
-    if (!facts.length) return "";
-    return `${facts.join(" | ")}${uncertain.length ? `. Uncertain, hedge these: ${uncertain.join(" | ")}` : ""}`;
-  } catch {
-    return "";
-  }
-}
-
 type StoryboardInput = {
   topic: string;
   scenes: number;
@@ -788,7 +783,7 @@ type StoryboardInput = {
 async function askBoard(prompt: string, topic: string, count: number, signal?: AbortSignal): Promise<StoryboardDraft> {
   let promptNow = prompt;
   for (let i = 0; i < 2; i++) {
-    const r = await chat(promptNow, "flash", signal, Math.min(24000, 4000 + 1200 * count));
+    const r = await chat(promptNow, "flash", signal, Math.min(24000, 4000 + 1200 * count), undefined, 0.7, true);
     const raw = String(r.text ?? "");
     if (raw.trim().length < 100) {
       promptNow = `${prompt}\n\nYour previous answer was too short. Return ONLY the JSON object with exactly ${count} parts.`;
@@ -818,7 +813,7 @@ async function fillMissing(draft: StoryboardDraft, input: StoryboardInput, count
     `Return ONLY JSON {"parts":[{"narration":"","moment":"","depiction":""}]} with exactly ${need} parts.\n\nTITLE: ${draft.title}\nSO FAR:\n${soFar}`;
   let more: StorySceneDraft[] = [];
   try {
-    const r = await chat(prompt, "flash", signal, Math.min(16000, 2000 + 1200 * need));
+    const r = await chat(prompt, "flash", signal, Math.min(16000, 2000 + 1200 * need), undefined, 0.7, true);
     const parsed = extractJson(String(r.text ?? "")) as { parts?: unknown; scenes?: unknown };
     const list = Array.isArray(parsed.parts) ? parsed.parts : parsed.scenes;
     more = scenesFromList(list, need);
@@ -829,51 +824,12 @@ async function fillMissing(draft: StoryboardDraft, input: StoryboardInput, count
   return { ...draft, scenes: [...draft.scenes, ...more].slice(0, count) };
 }
 
-function applyEdit(draft: StoryboardDraft, edit: Record<string, unknown>) {
-  const i = edit.index;
-  if (!Number.isInteger(i) || (i as number) < 0 || (i as number) >= draft.scenes.length) return;
-  const scene = draft.scenes[i as number];
-  const narration = cleanNarration(typeof edit.narration === "string" ? edit.narration.slice(0, 600) : "");
-  const moment = typeof edit.moment === "string" ? edit.moment.trim().slice(0, 600) : "";
-  const depiction = typeof edit.depiction === "string" ? edit.depiction.trim().slice(0, 800) : "";
-  if (narration) scene.narration = narration;
-  if (moment) scene.moment = moment;
-  if (depiction) scene.depiction = depiction;
-}
-
-async function editStory(draft: StoryboardDraft, input: StoryboardInput, facts: string, signal?: AbortSignal): Promise<StoryboardDraft> {
-  try {
-    const role = input.protagonist ? "hero" : "teller";
-    const script = draft.scenes.map((s, index) => ({ index, narration: s.narration }));
-    const prompt =
-      `You edit a short narrated tale so it is not flat. A flat tale is a tour of places, a list of facts, or a ${role} who only watches. ` +
-      `Fix plot holes, repeated beats, a missing choice, and an ending that does not answer part 1. ` +
-      `Keep exactly ${draft.scenes.length} parts. Do not add or remove any. ` +
-      `Narration stays in ${input.langName}. Do not translate it. Keep names. ` +
-      (facts ? `Do not add facts beyond these: ${facts}. ` : `Do not invent numbers, dates, or names. `) +
-      genreRule(input.genre ?? "", role) +
-      `When the action changes, also rewrite "moment" and "depiction" in English so the picture shows the new action. If the picture still matches, omit them. ` +
-      `Return ONLY JSON {"edits":[{"index":0,"narration":"","moment":"","depiction":""}]}. Omit parts you do not change. Use an empty edits list if the tale already turns, costs, and answers.\n` +
-      `SCRIPT: ${JSON.stringify(script)}`;
-    const r = await chat(prompt, "flash", signal, Math.min(24000, 3000 + 700 * draft.scenes.length), undefined, 0.4);
-    const parsed = extractJson(String(r.text ?? "")) as { edits?: unknown };
-    const edits = Array.isArray(parsed.edits) ? parsed.edits : [];
-    const next: StoryboardDraft = { ...draft, scenes: draft.scenes.map((s) => ({ ...s })) };
-    for (const e of edits) applyEdit(next, (e ?? {}) as Record<string, unknown>);
-    return next;
-  } catch {
-    return draft;
-  }
-}
-
 export async function generateStoryboard(input: StoryboardInput, signal?: AbortSignal): Promise<StoryboardDraft> {
   const count = clampScenes(input.scenes);
   const genre = input.genre ?? "";
-  const facts = await researchFacts(input.topic, genre, signal);
-  const base = storyboardPrompt(input.topic, count, input.langName, input.character, input.aspect, input.persona ?? "", input.design ?? "", input.styleLabel ?? "", input.protagonist ?? null, input.styleAnchor ?? "", genre, facts);
+  const base = storyboardPrompt(input.topic, count, input.langName, input.character, input.aspect, input.persona ?? "", input.design ?? "", input.styleLabel ?? "", input.protagonist ?? null, input.styleAnchor ?? "", genre, "");
   let draft = await askBoard(base, input.topic, count, signal);
-  if (draft.scenes.length < count) draft = await fillMissing(draft, input, count, facts, signal);
-  draft = await editStory(draft, input, facts, signal);
+  if (draft.scenes.length < count) draft = await fillMissing(draft, input, count, "", signal);
   return ensureEnglish(draft, signal);
 }
 
