@@ -128,13 +128,11 @@ async function markAccountError(accountId: string, status: number) {
   cooldownMap.set(accountId, Date.now() + (status === 429 ? 60_000 : 120_000));
   if (workerTokenCache && workerTokenCache.accountId === accountId) {
     workerTokenCache = null;
-    if (SHARE_API) {
-      fetch(`${SHARE_API}/api/gemini-token`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ brokenAccountId: accountId }),
-      }).catch(() => {});
-    }
+    fetch(`${SHARE_API}/api/gemini-token`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ brokenAccountId: accountId }),
+    }).catch(() => {});
   }
 }
 
@@ -218,7 +216,7 @@ async function getDirectAuth(signal?: AbortSignal): Promise<{ headers: Record<st
   }
 
   // 2. Fetch short-lived ya29 token from Storycast CF Worker (keeps master aas_et/ in CF Worker secret env)
-  if (SHARE_API) {
+  {
     const now = Date.now();
     if (workerTokenCache && workerTokenCache.expiresAt > now + 60_000) {
       return {

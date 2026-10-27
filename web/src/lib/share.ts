@@ -4,7 +4,7 @@ export const SHARE_API =
   (import.meta.env.VITE_SHARE_API as string | undefined)?.replace(/\/$/, "") || "";
 export const TURNSTILE_SITE_KEY = (import.meta.env.VITE_TURNSTILE_SITE_KEY as string | undefined) || "";
 
-export const SHARING = Boolean(SHARE_API);
+export const SHARING = true;
 
 export const REPO_URL = (import.meta.env.VITE_REPO_URL as string | undefined) || "https://github.com/ilkerzg/storycast";
 

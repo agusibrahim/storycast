@@ -3,8 +3,9 @@ import { listFacets, loadVoices, nativeVoice, parseQuery, searchList, speaks } f
 export interface Env {
   DB: D1Database;
   MEDIA: R2Bucket;
-  ALLOWED_ORIGINS: string;
-  IP_SALT: string;
+  ASSETS?: Fetcher;
+  ALLOWED_ORIGINS?: string;
+  IP_SALT?: string;
   TURNSTILE_SECRET?: string;
   FAL_KEY?: string;
   GEMINI_ACCOUNTS_KV?: KVNamespace;
@@ -93,14 +94,16 @@ function same(a: string, b: string) {
   return diff === 0;
 }
 
-const ipHash = (req: Request, env: Env) => sha256(`${env.IP_SALT}|${req.headers.get("cf-connecting-ip") ?? ""}`);
+const ipHash = (req: Request, env: Env) => sha256(`${env.IP_SALT ?? "storycast"}|${req.headers.get("cf-connecting-ip") ?? ""}`);
 
 function cors(req: Request, env: Env): Record<string, string> {
   const origin = req.headers.get("origin") ?? "";
-  const allowed = env.ALLOWED_ORIGINS.split(",").map((s) => s.trim());
-  if (!allowed.includes(origin)) return {};
+  const reqOrigin = new URL(req.url).origin;
+  const allowed = (env.ALLOWED_ORIGINS ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+  const ok = !origin || origin === reqOrigin || allowed.includes(origin) || allowed.includes("*");
+  if (!ok) return {};
   return {
-    "access-control-allow-origin": origin,
+    "access-control-allow-origin": origin || reqOrigin,
     "access-control-allow-methods": "GET, POST, PATCH, DELETE, OPTIONS",
     "access-control-allow-headers": "content-type, authorization",
     "access-control-max-age": "86400",
@@ -1087,6 +1090,21 @@ async function patchStory(req: Request, env: Env, id: string) {
 
 async function storyPoster(req: Request, env: Env, id: string) {
   await storyOwner(req, env, id);
+  const ctype = req.headers.get("content-type") || "";
+  if (!ctype.includes("application/json")) {
+    const q = new URL(req.url).searchParams;
+    const which = str(q.get("which"), 8);
+    if (which !== "h" && which !== "v") throw new HttpError(400, "which must be h or v");
+    const mime = ctype.split(";")[0].trim().toLowerCase();
+    if (!["image/png", "image/jpeg", "image/webp"].includes(mime) || !req.body) throw new HttpError(400, "bad poster upload");
+    const key = `stories/${id}/poster-${which}.${mime === "image/png" ? "png" : mime === "image/webp" ? "webp" : "jpg"}`;
+    await env.MEDIA.put(key, req.body, { httpMetadata: { contentType: mime, cacheControl: "public, max-age=31536000, immutable" } });
+    await cleanSiblings(env, id, `poster-${which}`, key);
+    const col = which === "h" ? "poster_h" : "poster_v";
+    const t = now();
+    await env.DB.prepare(`UPDATE story_projects SET updated = ?, ${col} = ? WHERE id = ?`).bind(t, key, id).run();
+    return json({ url: storyUrl(req, key, t), which }, req, env, 201);
+  }
   const body = (await req.json().catch(() => ({}))) as { which?: unknown; contentType?: unknown; data?: unknown };
   const which = str(body.which, 8);
   if (which !== "h" && which !== "v") throw new HttpError(400, "which must be h or v");
@@ -1096,9 +1114,6 @@ async function storyPoster(req: Request, env: Env, id: string) {
   const bytes = Math.floor((data.length - data.indexOf(",") - 1) * 0.75);
   if (bytes <= 0 || bytes > STORY_MEDIA_MAX) throw new HttpError(413, "the file is too large");
   const bin = Uint8Array.from(atob(data.slice(data.indexOf(",") + 1)), (c) => c.charCodeAt(0));
-  // Deterministic key: same scene+kind always lands on the same object, so a
-  // retry or a later adopt can never orphan or duplicate it. Put first, then
-  // delete legacy stamped siblings.
   const key = `stories/${id}/poster-${which}.${mime === "image/png" ? "png" : mime === "image/webp" ? "webp" : "jpg"}`;
   await env.MEDIA.put(key, bin, { httpMetadata: { contentType: mime, cacheControl: "public, max-age=31536000, immutable" } });
   await cleanSiblings(env, id, `poster-${which}`, key);
@@ -1111,21 +1126,31 @@ async function storyPoster(req: Request, env: Env, id: string) {
 async function storyMedia(req: Request, env: Env, id: string) {
   const row = await storyOwner(req, env, id);
   const ctype = req.headers.get("content-type") || "";
-  // Binary mode (used by large files): raw bytes in the body, metadata in the
+  // Binary mode (used by all media uploads): raw bytes in the body, metadata in the
   // query. Streams straight into R2 — no base64, no giant JSON parse, so no
-  // CPU-limit death on 20MB+ videos.
+  // CPU-limit 503 on images, audio, music, or videos.
   if (!ctype.includes("application/json")) {
     const q = new URL(req.url).searchParams;
     const scene = Math.floor(num(q.get("scene")));
     const kind = str(q.get("kind"), 16);
     const field = STORY_MEDIA_FIELDS[kind];
     const mime = ctype.split(";")[0].trim().toLowerCase();
+    if (kind === "music") {
+      const ext = mime === "audio/mpeg" ? "mp3" : mime === "audio/wav" || mime === "audio/x-wav" ? "wav" : mime === "audio/mp4" || mime === "audio/x-m4a" || mime === "audio/aac" ? "m4a" : "";
+      if (!ext || !req.body) throw new HttpError(400, "bad music upload");
+      const key = `stories/${id}/music.${ext}`;
+      await env.MEDIA.put(key, req.body, { httpMetadata: { contentType: mime, cacheControl: "public, max-age=31536000, immutable" } });
+      await cleanSiblings(env, id, "music", key);
+      const t = now();
+      await env.DB.prepare("UPDATE story_projects SET updated = ?, music_url = ? WHERE id = ?").bind(t, key, id).run();
+      return json({ url: storyUrl(req, key, t), kind }, req, env, 201);
+    }
     const type = STORY_MEDIA_TYPES[mime];
     const scenes = readScenes(row);
     if (!field || field === "music" || !type || scene < 0 || scene >= scenes.length) throw new HttpError(400, "bad media upload");
     const len = Number(req.headers.get("content-length"));
     const cap = kind === "video" ? STORY_VIDEO_MAX : STORY_MEDIA_MAX;
-    if (!len || len <= 0 || len > cap) throw new HttpError(413, `the file is too large (max ${cap / MB}MB)`);
+    if (len > cap) throw new HttpError(413, `the file is too large (max ${cap / MB}MB)`);
     if (!req.body) throw new HttpError(400, "empty body");
     const nn = String(scene).padStart(2, "0");
     const key = `stories/${id}/${kind}-${nn}.${type}`;
@@ -1520,7 +1545,8 @@ async function route(req: Request, env: Env, ctx: ExecutionContext): Promise<Res
     }
   }
 
-  if (path === "/" && m === "GET") return new Response("Storycast sharing API", { headers: { "content-type": "text/plain" } });
+  if (env.ASSETS) return env.ASSETS.fetch(req);
+  if (path === "/" && m === "GET") return new Response("Storycast API", { headers: { "content-type": "text/plain" } });
   throw new HttpError(404, "not found");
 }
 

@@ -440,7 +440,7 @@
   {
    "id": "ink-free-sketch",
    "label": "Sketsa Tinta Pena Garis Bebas",
-   "thumb": "https://storycast-share.aguzz.workers.dev/s/styles/ink-free-sketch.jpg",
+   "thumb": "/s/styles/ink-free-sketch.jpg",
    "category": "Gambar Tangan",
    "blurb": "Coretan pena yang hidup dan spontan",
    "anchor": "Expressive loose ink drawing art style, lively black fountain pen scribbles, energetic gestural hand-drawn line work, textured bright white canvas background, spontaneous ink marks, artistic continuous line illustration",
@@ -451,12 +451,12 @@
     "text": "#ffffff",
     "accent": "#a78bfa"
    },
-   "ref": "https://storycast-share.aguzz.workers.dev/s/styles/ink-free-sketch.jpg"
+   "ref": "/s/styles/ink-free-sketch.jpg"
   },
   {
    "id": "sepia-botanical",
    "label": "Sketsa Tinta Sepia Botani Vintage",
-   "thumb": "https://storycast-share.aguzz.workers.dev/s/styles/sepia-botanical.jpg",
+   "thumb": "/s/styles/sepia-botanical.jpg",
    "category": "Gambar Tangan",
    "blurb": "Jurnal botani antik yang hangat",
    "anchor": "Classic vintage sepia ink hand drawing, fine botanical journal sketch style, warm cream parchment paper canvas, intricate delicate stippling and hatching line work, warm antique aesthetic, cozy timeless book illustration",
@@ -467,12 +467,12 @@
     "text": "#ffffff",
     "accent": "#a78bfa"
    },
-   "ref": "https://storycast-share.aguzz.workers.dev/s/styles/sepia-botanical.jpg"
+   "ref": "/s/styles/sepia-botanical.jpg"
   },
   {
    "id": "dip-pen-classic",
    "label": "Sketsa Pena Celup Klasik",
-   "thumb": "https://storycast-share.aguzz.workers.dev/s/styles/dip-pen-classic.jpg",
+   "thumb": "/s/styles/dip-pen-classic.jpg",
    "category": "Gambar Tangan",
    "blurb": "Arsir padat ala dongeng antik",
    "anchor": "Victorian dip pen and ink illustration style, dense hand-drawn cross-hatching, warm buttery cream linen paper canvas, deep bistre ink strokes, rustic antique fairytale sketchbook aesthetic",
@@ -483,12 +483,12 @@
     "text": "#ffffff",
     "accent": "#a78bfa"
    },
-   "ref": "https://storycast-share.aguzz.workers.dev/s/styles/dip-pen-classic.jpg"
+   "ref": "/s/styles/dip-pen-classic.jpg"
   },
   {
    "id": "gold-coffee-canvas",
    "label": "Sketsa Tinta Emas Kertas Kopi",
-   "thumb": "https://storycast-share.aguzz.workers.dev/s/styles/gold-coffee-canvas.jpg",
+   "thumb": "/s/styles/gold-coffee-canvas.jpg",
    "category": "Gambar Tangan",
    "blurb": "Kemewahan malam yang menenangkan",
    "anchor": "Warm shimmering metallic gold and sepia ink line art, deep dark roasted coffee paper canvas, soothing eye-friendly nocturnal palette, intricate hand-drawn filigree and hatching, soft atmospheric nighttime ambiance",
@@ -499,12 +499,12 @@
     "text": "#ffffff",
     "accent": "#a78bfa"
    },
-   "ref": "https://storycast-share.aguzz.workers.dev/s/styles/gold-coffee-canvas.jpg"
+   "ref": "/s/styles/gold-coffee-canvas.jpg"
   },
   {
    "id": "pixar-3d",
    "label": "3D Animasi Pixar / Disney",
-   "thumb": "https://storycast-share.aguzz.workers.dev/s/styles/pixar-3d.jpg",
+   "thumb": "/s/styles/pixar-3d.jpg",
    "category": "Animasi 3D",
    "blurb": "Hangat dan ekspresif ala film bioskop",
    "anchor": "3D Pixar animation style, soft studio lighting, cute expressive characters, vibrant colors, cinematic 8k render",
@@ -515,12 +515,12 @@
     "text": "#ffffff",
     "accent": "#a78bfa"
    },
-   "ref": "https://storycast-share.aguzz.workers.dev/s/styles/pixar-3d.jpg"
+   "ref": "/s/styles/pixar-3d.jpg"
   },
   {
    "id": "toddler-3d",
    "label": "3D Kartun Balita",
-   "thumb": "https://storycast-share.aguzz.workers.dev/s/styles/toddler-3d.jpg",
+   "thumb": "/s/styles/toddler-3d.jpg",
    "category": "Animasi 3D",
    "blurb": "Lucu dan ceria untuk balita",
    "anchor": "Ultra-cute 3D preschool animation style, soft rounded toddler proportions, cheerful bold saturated primary colors, soft bright daylight, adorable friendly expressions",
@@ -531,12 +531,12 @@
     "text": "#ffffff",
     "accent": "#a78bfa"
    },
-   "ref": "https://storycast-share.aguzz.workers.dev/s/styles/toddler-3d.jpg"
+   "ref": "/s/styles/toddler-3d.jpg"
   },
   {
    "id": "brick-world",
    "label": "Dunia Balok Mainan",
-   "thumb": "https://storycast-share.aguzz.workers.dev/s/styles/brick-world.jpg",
+   "thumb": "/s/styles/brick-world.jpg",
    "category": "Animasi 3D",
    "blurb": "Dunia mini balok plastik",
    "anchor": "Vibrant toy brick miniature world, glossy plastic block textures, tactile seam lines, studio macro tilt-shift photography, playful blocky minifigure characters",
@@ -547,12 +547,12 @@
     "text": "#ffffff",
     "accent": "#a78bfa"
    },
-   "ref": "https://storycast-share.aguzz.workers.dev/s/styles/brick-world.jpg"
+   "ref": "/s/styles/brick-world.jpg"
   },
   {
    "id": "lowpoly-diorama",
    "label": "3D Low-Poly Isometrik",
-   "thumb": "https://storycast-share.aguzz.workers.dev/s/styles/lowpoly-diorama.jpg",
+   "thumb": "/s/styles/lowpoly-diorama.jpg",
    "category": "Animasi 3D",
    "blurb": "Diorama miniatur yang rapi",
    "anchor": "Charming low-poly 3D isometric diorama art style, clean faceted polygonal surfaces, soft miniature ambient lighting, pastel color palette, neat architectural detailing",
@@ -563,12 +563,12 @@
     "text": "#ffffff",
     "accent": "#a78bfa"
    },
-   "ref": "https://storycast-share.aguzz.workers.dev/s/styles/lowpoly-diorama.jpg"
+   "ref": "/s/styles/lowpoly-diorama.jpg"
   },
   {
    "id": "ghibli-anime",
    "label": "Anime Studio Ghibli",
-   "thumb": "https://storycast-share.aguzz.workers.dev/s/styles/ghibli-anime.jpg",
+   "thumb": "/s/styles/ghibli-anime.jpg",
    "category": "Kartun TV",
    "blurb": "Nostalgia damai ala Miyazaki",
    "anchor": "Studio Ghibli aesthetic anime illustration, hand-painted lush scenery, nostalgic peaceful atmosphere, detailed clouds, rich natural greens and sky blues",
@@ -579,12 +579,12 @@
     "text": "#ffffff",
     "accent": "#a78bfa"
    },
-   "ref": "https://storycast-share.aguzz.workers.dev/s/styles/ghibli-anime.jpg"
+   "ref": "/s/styles/ghibli-anime.jpg"
   },
   {
    "id": "bluey-cartoon",
    "label": "Animasi Bluey",
-   "thumb": "https://storycast-share.aguzz.workers.dev/s/styles/bluey-cartoon.jpg",
+   "thumb": "/s/styles/bluey-cartoon.jpg",
    "category": "Kartun TV",
    "blurb": "Pastel hangat penuh kasih",
    "anchor": "Bluey cartoon animation style, clean warm pastel palette, soft rounded vector art, cozy family atmosphere, heartwarming emotive characters, flat shaded modern storybook",
@@ -595,12 +595,12 @@
     "text": "#ffffff",
     "accent": "#a78bfa"
    },
-   "ref": "https://storycast-share.aguzz.workers.dev/s/styles/bluey-cartoon.jpg"
+   "ref": "/s/styles/bluey-cartoon.jpg"
   },
   {
    "id": "disney-2d",
    "label": "Animasi Disney Klasik 2D",
-   "thumb": "https://storycast-share.aguzz.workers.dev/s/styles/disney-2d.jpg",
+   "thumb": "/s/styles/disney-2d.jpg",
    "category": "Kartun TV",
    "blurb": "Keajaiban klasik tahun 90-an",
    "anchor": "Classic 1990s Disney 2D hand-drawn animation style, expressive clean ink outlines, rich gouache painted background, magical golden atmospheric lighting, timeless cel shading",
@@ -611,12 +611,12 @@
     "text": "#ffffff",
     "accent": "#a78bfa"
    },
-   "ref": "https://storycast-share.aguzz.workers.dev/s/styles/disney-2d.jpg"
+   "ref": "/s/styles/disney-2d.jpg"
   },
   {
    "id": "flat-preschool",
    "label": "Kartun Flat Minimalis",
-   "thumb": "https://storycast-share.aguzz.workers.dev/s/styles/flat-preschool.jpg",
+   "thumb": "/s/styles/flat-preschool.jpg",
    "category": "Kartun TV",
    "blurb": "Ceria sederhana ala Peppa",
    "anchor": "Charming flat 2D preschool storybook cartoon style, bold crayon outlines, clean bright flat pastel fills, playful child-like perspective, cheerful naive joy",
@@ -627,12 +627,12 @@
     "text": "#ffffff",
     "accent": "#a78bfa"
    },
-   "ref": "https://storycast-share.aguzz.workers.dev/s/styles/flat-preschool.jpg"
+   "ref": "/s/styles/flat-preschool.jpg"
   },
   {
    "id": "kodomo-manga",
    "label": "Manga Kodomo Klasik",
-   "thumb": "https://storycast-share.aguzz.workers.dev/s/styles/kodomo-manga.jpg",
+   "thumb": "/s/styles/kodomo-manga.jpg",
    "category": "Kartun TV",
    "blurb": "Nostalgia masa kecil ala Doraemon",
    "anchor": "Classic Japanese Kodomo manga and anime style, clean iconic lineart, cheerful vibrant blue sky palette, friendly expressive round character design, nostalgic childhood vibe",
@@ -643,12 +643,12 @@
     "text": "#ffffff",
     "accent": "#a78bfa"
    },
-   "ref": "https://storycast-share.aguzz.workers.dev/s/styles/kodomo-manga.jpg"
+   "ref": "/s/styles/kodomo-manga.jpg"
   },
   {
    "id": "retro-cartoon90s",
    "label": "Kartun Retro 90-an",
-   "thumb": "https://storycast-share.aguzz.workers.dev/s/styles/retro-cartoon90s.jpg",
+   "thumb": "/s/styles/retro-cartoon90s.jpg",
    "category": "Kartun TV",
    "blurb": "Energik dan retro berani",
    "anchor": "Classic 90s Cartoon Network retro animation style, bold thick geometric black outlines, vibrant flat retro color blocks, energetic dynamic posing and vintage cel look",
@@ -659,12 +659,12 @@
     "text": "#ffffff",
     "accent": "#a78bfa"
    },
-   "ref": "https://storycast-share.aguzz.workers.dev/s/styles/retro-cartoon90s.jpg"
+   "ref": "/s/styles/retro-cartoon90s.jpg"
   },
   {
    "id": "pop-comic",
    "label": "Komik Pop-Art Sinematik",
-   "thumb": "https://storycast-share.aguzz.workers.dev/s/styles/pop-comic.jpg",
+   "thumb": "/s/styles/pop-comic.jpg",
    "category": "Kartun TV",
    "blurb": "Komik pop penuh gerak",
    "anchor": "Stylized graphic novel comic art style, Ben-Day halftone dot patterns, dynamic ink cross-hatching, vibrant CMYK color separation, kinetic cinematic flair",
@@ -675,12 +675,12 @@
     "text": "#ffffff",
     "accent": "#a78bfa"
    },
-   "ref": "https://storycast-share.aguzz.workers.dev/s/styles/pop-comic.jpg"
+   "ref": "/s/styles/pop-comic.jpg"
   },
   {
    "id": "watercolor-storybook",
    "label": "Cat Air Cerita Anak",
-   "thumb": "https://storycast-share.aguzz.workers.dev/s/styles/watercolor-storybook.jpg",
+   "thumb": "/s/styles/watercolor-storybook.jpg",
    "category": "Buku Klasik",
    "blurb": "Lembut dan melamun",
    "anchor": "Soft watercolor children storybook illustration, gentle pastel colors, whimsical hand-drawn textures, dreamy paper bleeding effects",
@@ -691,12 +691,12 @@
     "text": "#ffffff",
     "accent": "#a78bfa"
    },
-   "ref": "https://storycast-share.aguzz.workers.dev/s/styles/watercolor-storybook.jpg"
+   "ref": "/s/styles/watercolor-storybook.jpg"
   },
   {
    "id": "vintage-fairytale",
    "label": "Dongeng Vintage Klasik",
-   "thumb": "https://storycast-share.aguzz.workers.dev/s/styles/vintage-fairytale.jpg",
+   "thumb": "/s/styles/vintage-fairytale.jpg",
    "category": "Buku Klasik",
    "blurb": "Dongeng abadi yang hangat",
    "anchor": "Vintage fairytale picture book classic art style, rich warm textures, timeless nostalgic illustration, golden antique tint",
@@ -707,12 +707,12 @@
     "text": "#ffffff",
     "accent": "#a78bfa"
    },
-   "ref": "https://storycast-share.aguzz.workers.dev/s/styles/vintage-fairytale.jpg"
+   "ref": "/s/styles/vintage-fairytale.jpg"
   },
   {
    "id": "beatrix-potter",
    "label": "Ilustrasi Beatrix Potter",
-   "thumb": "https://storycast-share.aguzz.workers.dev/s/styles/beatrix-potter.jpg",
+   "thumb": "/s/styles/beatrix-potter.jpg",
    "category": "Buku Klasik",
    "blurb": "Hewan mungil ala Peter Rabbit",
    "anchor": "Classic Beatrix Potter illustration style, delicate fine pen ink lines with soft English watercolor washes, gentle vintage anthropomorphic animal characters, countryside cottagecore charm",
@@ -723,12 +723,12 @@
     "text": "#ffffff",
     "accent": "#a78bfa"
    },
-   "ref": "https://storycast-share.aguzz.workers.dev/s/styles/beatrix-potter.jpg"
+   "ref": "/s/styles/beatrix-potter.jpg"
   },
   {
    "id": "seuss-whimsy",
    "label": "Eksentrik Dr. Seuss",
-   "thumb": "https://storycast-share.aguzz.workers.dev/s/styles/seuss-whimsy.jpg",
+   "thumb": "/s/styles/seuss-whimsy.jpg",
    "category": "Buku Klasik",
    "blurb": "Liar, lucu, dan imajinatif",
    "anchor": "Whimsical Dr. Seuss illustration style, quirky wavy architectural curves, playful hatched pen and ink lines, bright whimsical color blocks, imaginative surrealism",
@@ -739,12 +739,12 @@
     "text": "#ffffff",
     "accent": "#a78bfa"
    },
-   "ref": "https://storycast-share.aguzz.workers.dev/s/styles/seuss-whimsy.jpg"
+   "ref": "/s/styles/seuss-whimsy.jpg"
   },
   {
    "id": "nordic-folk",
    "label": "Folk Art Skandinavia",
-   "thumb": "https://storycast-share.aguzz.workers.dev/s/styles/nordic-folk.jpg",
+   "thumb": "/s/styles/nordic-folk.jpg",
    "category": "Buku Klasik",
    "blurb": "Motif nordik yang menenangkan",
    "anchor": "Nordic folk art illustration style, opaque matte gouache paint, stylized botanical flora and fauna patterns, earthy hygge palette, decorative handcrafted charm",
@@ -755,12 +755,12 @@
     "text": "#ffffff",
     "accent": "#a78bfa"
    },
-   "ref": "https://storycast-share.aguzz.workers.dev/s/styles/nordic-folk.jpg"
+   "ref": "/s/styles/nordic-folk.jpg"
   },
   {
    "id": "chalk-pastel",
    "label": "Krayon Pastel Kapur",
-   "thumb": "https://storycast-share.aguzz.workers.dev/s/styles/chalk-pastel.jpg",
+   "thumb": "/s/styles/chalk-pastel.jpg",
    "category": "Buku Klasik",
    "blurb": "Lembut bernostalgia",
    "anchor": "Expressive chalk pastel drawing on textured kraft paper, dreamy smudged powdery gradients, warm hand-drawn strokes, nostalgic heartfelt storybook feel",
@@ -771,12 +771,12 @@
     "text": "#ffffff",
     "accent": "#a78bfa"
    },
-   "ref": "https://storycast-share.aguzz.workers.dev/s/styles/chalk-pastel.jpg"
+   "ref": "/s/styles/chalk-pastel.jpg"
   },
   {
    "id": "cinematic-photo",
    "label": "Fotografi Sinematik 8K",
-   "thumb": "https://storycast-share.aguzz.workers.dev/s/styles/cinematic-photo.jpg",
+   "thumb": "/s/styles/cinematic-photo.jpg",
    "category": "Sinematik",
    "blurb": "Nyata seperti foto film",
    "anchor": "Cinematic nature photography, soft golden hour lighting, macro depth of field, hyper-detailed, 8k resolution, photorealistic film still",
@@ -787,12 +787,12 @@
     "text": "#ffffff",
     "accent": "#a78bfa"
    },
-   "ref": "https://storycast-share.aguzz.workers.dev/s/styles/cinematic-photo.jpg"
+   "ref": "/s/styles/cinematic-photo.jpg"
   },
   {
    "id": "digital-fantasy",
    "label": "Digital Fantasi Modern",
-   "thumb": "https://storycast-share.aguzz.workers.dev/s/styles/digital-fantasy.jpg",
+   "thumb": "/s/styles/digital-fantasy.jpg",
    "category": "Sinematik",
    "blurb": "Sihir epik penuh cahaya",
    "anchor": "Vibrant modern digital fantasy concept art, glowing magical particles, epic volumetric lighting, rich color saturation",
@@ -803,12 +803,12 @@
     "text": "#ffffff",
     "accent": "#a78bfa"
    },
-   "ref": "https://storycast-share.aguzz.workers.dev/s/styles/digital-fantasy.jpg"
+   "ref": "/s/styles/digital-fantasy.jpg"
   },
   {
    "id": "burton-gothic",
    "label": "Gothic Fairytale Tim Burton",
-   "thumb": "https://storycast-share.aguzz.workers.dev/s/styles/burton-gothic.jpg",
+   "thumb": "/s/styles/burton-gothic.jpg",
    "category": "Sinematik",
    "blurb": "Gotik aneh yang menawan",
    "anchor": "Tim Burton whimsical dark fairytale aesthetic, quirky slender exaggerated silhouettes, moody spiral patterns, atmospheric gothic twilight, charming macabre warmth",
@@ -819,12 +819,12 @@
     "text": "#ffffff",
     "accent": "#a78bfa"
    },
-   "ref": "https://storycast-share.aguzz.workers.dev/s/styles/burton-gothic.jpg"
+   "ref": "/s/styles/burton-gothic.jpg"
   },
   {
    "id": "steampunk-brass",
    "label": "Fantasi Steampunk",
-   "thumb": "https://storycast-share.aguzz.workers.dev/s/styles/steampunk-brass.jpg",
+   "thumb": "/s/styles/steampunk-brass.jpg",
    "category": "Sinematik",
    "blurb": "Mesin kuningan dan uap",
    "anchor": "Intricate Victorian steampunk art style, brass clockwork gears, glowing copper pipes, polished mahogany wood, warm lantern haze, fantastical retro-futuristic detail",
@@ -835,12 +835,12 @@
     "text": "#ffffff",
     "accent": "#a78bfa"
    },
-   "ref": "https://storycast-share.aguzz.workers.dev/s/styles/steampunk-brass.jpg"
+   "ref": "/s/styles/steampunk-brass.jpg"
   },
   {
    "id": "chibi-cyberpunk",
    "label": "Chibi Cyberpunk Neon",
-   "thumb": "https://storycast-share.aguzz.workers.dev/s/styles/chibi-cyberpunk.jpg",
+   "thumb": "/s/styles/chibi-cyberpunk.jpg",
    "category": "Sinematik",
    "blurb": "Neon mungil futuristik",
    "anchor": "Chibi cute futuristic cyberpunk style, vibrant glowing neon lights, holographic reflections, cozy wet city street reflections, highly stylized cute anime",
@@ -851,7 +851,7 @@
     "text": "#ffffff",
     "accent": "#a78bfa"
    },
-   "ref": "https://storycast-share.aguzz.workers.dev/s/styles/chibi-cyberpunk.jpg"
+   "ref": "/s/styles/chibi-cyberpunk.jpg"
   }
  ],
  "character_groups": [

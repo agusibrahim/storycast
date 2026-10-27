@@ -20,14 +20,12 @@ export function studioData(): Promise<StudioData> {
     const base = (await fetch("/data/config.json").then((r) => r.json())) as StudioData;
     // Characters come from CF (D1+R2); static config is only the fallback.
     try {
-      if (SHARE_API) {
-        const r = await fetch(`${SHARE_API}/api/characters`);
-        if (r.ok) {
-          const j = (await r.json()) as { characters?: CastFull[] };
-          if (Array.isArray(j.characters) && j.characters.length) {
-            base.characters = j.characters;
-            base.character_groups = [...new Set(j.characters.map((c) => c.group).filter(Boolean))];
-          }
+      const r = await fetch(`${SHARE_API}/api/characters`);
+      if (r.ok) {
+        const j = (await r.json()) as { characters?: CastFull[] };
+        if (Array.isArray(j.characters) && j.characters.length) {
+          base.characters = j.characters;
+          base.character_groups = [...new Set(j.characters.map((c) => c.group).filter(Boolean))];
         }
       }
     } catch {}

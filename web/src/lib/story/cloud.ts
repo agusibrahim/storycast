@@ -2,7 +2,7 @@ import { SHARE_API } from "@/lib/share";
 import type { AspectRatio } from "./robin";
 import type { ImageSource, StoryProject } from "./project";
 
-export const CLOUD = Boolean(SHARE_API);
+export const CLOUD = true;
 
 const OWNERS_KEY = "storycast-story-owners";
 
@@ -362,60 +362,63 @@ export async function adoptCloudMedia(id: string, owner: string, scene: number, 
 }
 
 export async function uploadCloudMedia(id: string, owner: string, scene: number, kind: MediaKind, blob: Blob): Promise<string> {
-  // Videos ride as raw binary (streams server-side, near-zero CPU). Base64
-  // JSON of a 20MB mp4 kills the worker with a CPU-limit 503 — see t503test.
-  if (kind === "video") {
-    const r = await enqueue(() =>
-      withRetry(async () => {
-        const ctrl = new AbortController();
-        // Large streaming PUTs can stall mid-body — cap it so the write
-        // queue (and every autosave behind it) can never wedge forever.
-        const timer = window.setTimeout(() => ctrl.abort(new Error("video upload timed out")), 120000);
-        let res: Response;
-        try {
-          res = await fetch(`${SHARE_API}/api/stories/${id}/media?scene=${scene}&kind=${encodeURIComponent(kind)}`, {
-            method: "POST",
-            headers: { "content-type": blob.type || "video/mp4", authorization: `Owner ${owner}` },
-            body: blob,
-            signal: ctrl.signal,
-          } as RequestInit);
-        } catch {
-          throw new Error("upload blocked before reaching the server (edge rejection, adblocker, timeout, or dropped connection) — retrying");
-        } finally {
-          window.clearTimeout(timer);
-        }
-        const d = (await res.json().catch(() => ({}))) as Record<string, unknown>;
-        if (!res.ok) {
-          const e = new Error(String(d.error || `cloud request failed (${res.status})`)) as Error & { status?: number };
-          e.status = res.status;
-          throw e;
-        }
-        return d as { url: string };
-      }),
-    );
-    return r.url;
-  }
-  const data = await blobToDataUrl(blob);
+  // All media rides as raw binary (streams server-side into R2 with near-zero CPU).
+  // Base64 JSON of multi-MB images/audio/video hits Cloudflare Worker CPU limits (503).
   const r = await enqueue(() =>
-    withRetry(() =>
-      call<{ url: string }>(`/api/stories/${id}/media`, {
-        method: "POST",
-        body: JSON.stringify({ scene, kind, contentType: blob.type || "application/octet-stream", data }),
-      }, owner),
-    ),
+    withRetry(async () => {
+      const ctrl = new AbortController();
+      const timer = window.setTimeout(() => ctrl.abort(new Error("media upload timed out")), 120000);
+      let res: Response;
+      try {
+        res = await fetch(`${SHARE_API}/api/stories/${id}/media?scene=${scene}&kind=${encodeURIComponent(kind)}`, {
+          method: "POST",
+          headers: { "content-type": blob.type || "application/octet-stream", authorization: `Owner ${owner}` },
+          body: blob,
+          signal: ctrl.signal,
+        } as RequestInit);
+      } catch {
+        throw new Error("upload blocked before reaching the server (edge rejection, adblocker, timeout, or dropped connection) — retrying");
+      } finally {
+        window.clearTimeout(timer);
+      }
+      const d = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+      if (!res.ok) {
+        const e = new Error(String(d.error || `cloud request failed (${res.status})`)) as Error & { status?: number };
+        e.status = res.status;
+        throw e;
+      }
+      return d as { url: string };
+    }),
   );
   return r.url;
 }
 
 export async function uploadCloudPoster(id: string, owner: string, which: "h" | "v", blob: Blob): Promise<string> {
-  const data = await blobToDataUrl(blob);
   const r = await enqueue(() =>
-    withRetry(() =>
-      call<{ url: string }>(`/api/stories/${id}/poster`, {
-        method: "POST",
-        body: JSON.stringify({ which, contentType: blob.type || "image/jpeg", data }),
-      }, owner),
-    ),
+    withRetry(async () => {
+      const ctrl = new AbortController();
+      const timer = window.setTimeout(() => ctrl.abort(new Error("poster upload timed out")), 60000);
+      let res: Response;
+      try {
+        res = await fetch(`${SHARE_API}/api/stories/${id}/poster?which=${encodeURIComponent(which)}`, {
+          method: "POST",
+          headers: { "content-type": blob.type || "image/jpeg", authorization: `Owner ${owner}` },
+          body: blob,
+          signal: ctrl.signal,
+        } as RequestInit);
+      } catch {
+        throw new Error("upload blocked before reaching the server — retrying");
+      } finally {
+        window.clearTimeout(timer);
+      }
+      const d = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+      if (!res.ok) {
+        const e = new Error(String(d.error || `cloud request failed (${res.status})`)) as Error & { status?: number };
+        e.status = res.status;
+        throw e;
+      }
+      return d as { url: string };
+    }),
   );
   return r.url;
 }

@@ -17,16 +17,11 @@ async function voiceApi<T>(path: string, params: Record<string, string>, signal?
 
 let facetCache: Promise<VoiceFacets> | null = null;
 export function facets(): Promise<VoiceFacets> {
-  if (!SHARE_API) return Promise.resolve(EMPTY_FACETS);
-  facetCache ??= voiceApi<VoiceFacets>("/api/voices/facets", {}).catch((e) => {
-    facetCache = null;
-    throw e;
-  });
+  facetCache ??= voiceApi<VoiceFacets>("/api/voices/facets", {}).catch(() => EMPTY_FACETS);
   return facetCache;
 }
 
 export async function search(q: VoiceQuery, page = 0, signal?: AbortSignal): Promise<VoicePage> {
-  if (!SHARE_API) return { voices: [], total_count: 0, has_more: false };
   return voiceApi<VoicePage>("/api/voices", { q: JSON.stringify(q), page: String(page) }, signal);
 }
 
@@ -34,7 +29,7 @@ export type VoiceCheck = { voice: Voice | null; speaks: boolean; native: Voice |
 
 export async function checkVoice(by: { id?: string; name?: string }, lang: string): Promise<VoiceCheck> {
   const none = { voice: null, speaks: true, native: null };
-  if (!SHARE_API || !(by.id || by.name)) return none;
+  if (!(by.id || by.name)) return none;
   const language = (await studioData()).languages.find((l) => l.code === lang)?.name ?? "English";
   return voiceApi<VoiceCheck>("/api/voices/check", { ...(by.id ? { id: by.id } : { name: by.name! }), lang, language }).catch(() => none);
 }

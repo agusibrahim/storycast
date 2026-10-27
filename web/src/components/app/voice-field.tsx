@@ -5,7 +5,6 @@ import { VoiceLibrary, pretty, previewFor, splitName } from "@/components/app/vo
 import { EASE_OUT } from "@/lib/ease";
 import { usePlayer } from "@/lib/use-player";
 import { api, type Voice } from "@/lib/api";
-import { SHARE_API } from "@/lib/share";
 
 type Props = {
   value: Voice | null;
@@ -20,7 +19,7 @@ export function VoiceField({ value, onChange, lang, topic, fallback }: Props) {
   const [total, setTotal] = useState(0);
 
   useEffect(() => {
-    if (SHARE_API) api.voiceFacets().then((f) => setTotal(f.total)).catch(() => {});
+    api.voiceFacets().then((f) => setTotal(f.total)).catch(() => {});
   }, []);
   const player = usePlayer();
   const playing = value && player.playing === value.voice_id;
